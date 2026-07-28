@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -37,4 +38,25 @@ test("renders the upload-first dashboard without bundled post data", async () =>
   assert.doesNotMatch(html, /Line chart/);
   assert.doesNotMatch(html, /Copy full post title/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/);
+});
+
+test("bar highlighting hides only inactive quantity labels", async () => {
+  const css = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+  const hiddenLabelRule =
+    ".bar-chart-wrap[data-highlighted-metric] .chart-bar-value-label";
+  const selectedMetricRule =
+    '.chart-wrap[data-highlighted-metric="views"] .chart-metric-views';
+
+  assert.match(
+    css,
+    /\.bar-chart-wrap\[data-highlighted-metric\] \.chart-bar-value-label\s*\{\s*opacity:\s*0;/,
+  );
+  assert.ok(
+    css.indexOf(selectedMetricRule) > css.indexOf(hiddenLabelRule),
+    "the selected metric rule must restore its labels after inactive labels are hidden",
+  );
+  assert.match(css, /opacity 120ms ease/);
 });

@@ -1532,6 +1532,10 @@ td time {
   opacity: 0.18;
 }
 
+.bar-chart-wrap[data-highlighted-metric] .chart-bar-value-label {
+  opacity: 0;
+}
+
 .line-chart-wrap[data-highlighted-metric] .chart-line-series,
 .line-chart-wrap[data-highlighted-metric] .chart-series-point,
 .line-chart-wrap[data-highlighted-metric] .chart-active-point {
