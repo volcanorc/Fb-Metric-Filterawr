@@ -74,18 +74,23 @@ import {
   type ChartGrouping,
   type ChartInteractionState,
   type ChartMetricTransitionState,
+  type CorePerformanceMetricKey,
   type CsvParseResult,
-  type DashboardPreferencesV2,
+  type DashboardPreferencesV3,
   type DashboardView,
   type DatePreset,
   type FilterState,
   type NumericRange,
   type PostMetric,
+  type SortBy,
+  type SortOrder,
   type SortRule,
   type TableMetricKey,
+  CORE_PERFORMANCE_METRICS,
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   DEFAULT_VISIBLE_METRICS,
+  LEGACY_PREFERENCES_STORAGE_KEY,
   LEGACY_VIEW_KEY,
   LEGACY_VISIBILITY_KEY,
   PREFERENCES_STORAGE_KEY,
@@ -102,6 +107,7 @@ import {
   getChartDataSignature,
   getDisplayedRowNumber,
   getPostHeadline,
+  isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
   reconcileChartMetricTransition,
@@ -134,6 +140,14 @@ const defaultFilters: FilterState = {
 };
 
 type Icon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
+const CORE_METRIC_SET = new Set<TableMetricKey>(CORE_PERFORMANCE_METRICS);
+const coreMetricDefinitions = tableMetricDefinitions.filter(
+  (
+    metric,
+  ): metric is (typeof tableMetricDefinitions)[number] & {
+    key: CorePerformanceMetricKey;
+  } => CORE_METRIC_SET.has(metric.key),
+);
 
 function visibilityFromMetrics(metrics: TableMetricKey[]): VisibilityState {
   return Object.fromEntries(
@@ -141,10 +155,8 @@ function visibilityFromMetrics(metrics: TableMetricKey[]): VisibilityState {
   );
 }
 
-function sortRulesFromState(sorting: SortingState): SortRule[] {
-  if (!sorting.length) return [];
-  const first = sorting[0];
-  return [{ id: first.id as SortRule["id"], desc: first.desc }];
+function toSortRule(sortBy: SortBy, sortOrder: SortOrder): SortRule[] {
+  return [{ id: sortBy, desc: sortOrder === "desc" }];
 }
 
 function openPost(url: string) {
@@ -345,21 +357,31 @@ function MetricQuickControls({
   onToggle: (key: TableMetricKey, checked: boolean) => void;
   onHighlight?: (key: TableMetricKey | null) => void;
 }) {
+  const visibleCoreCount = CORE_PERFORMANCE_METRICS.filter((key) =>
+    visibleMetrics.includes(key),
+  ).length;
+  const displayedMetrics = tableMetricDefinitions.filter(
+    ({ key }) => CORE_METRIC_SET.has(key) || visibleMetrics.includes(key),
+  );
+
   return (
     <div
       className="chart-legend metric-quick-controls"
       aria-label="Quick metric controls"
     >
-      {tableMetricDefinitions.map((metric) => {
+      {displayedMetrics.map((metric) => {
         const active = visibleMetrics.includes(metric.key);
-        const lastVisible = active && visibleMetrics.length === 1;
+        const lastCore =
+          active &&
+          CORE_METRIC_SET.has(metric.key) &&
+          visibleCoreCount === 1;
         return (
           <button
             type="button"
             key={metric.key}
             className={active ? "active" : ""}
             aria-pressed={active}
-            disabled={lastVisible}
+            disabled={lastCore}
             onClick={() => {
               onHighlight?.(null);
               onToggle(metric.key, !active);
@@ -369,8 +391,8 @@ function MetricQuickControls({
             onFocus={() => active && onHighlight?.(metric.key)}
             onBlur={() => onHighlight?.(null)}
             title={
-              lastVisible
-                ? "At least one metric must remain visible"
+              lastCore
+                ? "At least one performance metric must remain visible"
                 : `${active ? "Hide" : "Show"} ${metric.label}`
             }
           >
@@ -916,8 +938,8 @@ export default function Home() {
   const [dataset, setDataset] = useState<CsvParseResult>(EMPTY_DATASET);
   const [fileName, setFileName] = useState("");
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
-  const [analyzeMetric, setAnalyzeMetric] =
-    useState<TableMetricKey>("views");
+  const [sortBy, setSortBy] = useState<SortBy>("views");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [view, setView] = useState<DashboardView>("table");
   const [chartGrouping, setChartGrouping] =
     useState<ChartGrouping>("post");
@@ -926,9 +948,6 @@ export default function Home() {
   const [showMetricQuickControls, setShowMetricQuickControls] =
     useState(true);
   const [tableInternalScroll, setTableInternalScroll] = useState(false);
-  const [sorting, setSorting] = useState<SortingState>([
-    { id: "views", desc: true },
-  ]);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
     visibilityFromMetrics(DEFAULT_VISIBLE_METRICS),
   );
@@ -945,7 +964,8 @@ export default function Home() {
   useEffect(() => {
     try {
       const preferences = parseDashboardPreferences(
-        window.localStorage.getItem(PREFERENCES_STORAGE_KEY),
+        window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY),
         window.localStorage.getItem(LEGACY_VISIBILITY_KEY),
         window.localStorage.getItem(LEGACY_VIEW_KEY),
       );
@@ -953,8 +973,8 @@ export default function Home() {
       setColumnVisibility(
         visibilityFromMetrics(preferences.visibleMetrics),
       );
-      setAnalyzeMetric(preferences.analyzeMetric);
-      setSorting(preferences.sorting as SortingState);
+      setSortBy(preferences.sortBy);
+      setSortOrder(preferences.sortOrder);
       setChartGrouping(preferences.chartGrouping);
       setShowMetricQuickControls(preferences.showMetricQuickControls);
       setTableInternalScroll(preferences.tableInternalScroll);
@@ -973,15 +993,22 @@ export default function Home() {
         .map(({ key }) => key),
     [columnVisibility],
   );
+  const selectedCoreMetricKeys = useMemo(
+    () =>
+      CORE_PERFORMANCE_METRICS.filter((key) =>
+        visibleMetricKeys.includes(key),
+      ),
+    [visibleMetricKeys],
+  );
 
   useEffect(() => {
     if (!preferencesReady) return;
-    const preferences: DashboardPreferencesV2 = {
-      version: 2,
+    const preferences: DashboardPreferencesV3 = {
+      version: 3,
       view,
       visibleMetrics: visibleMetricKeys,
-      analyzeMetric,
-      sorting: sortRulesFromState(sorting),
+      sortBy,
+      sortOrder,
       chartGrouping,
       pageSize: pagination.pageSize as 25 | 50 | 100,
       showMetricQuickControls,
@@ -992,17 +1019,18 @@ export default function Home() {
         PREFERENCES_STORAGE_KEY,
         JSON.stringify(preferences),
       );
+      window.localStorage.removeItem(LEGACY_PREFERENCES_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_VISIBILITY_KEY);
       window.localStorage.removeItem(LEGACY_VIEW_KEY);
     } catch {
       // Device preferences are optional in private or restricted browsing.
     }
   }, [
-    analyzeMetric,
     chartGrouping,
     pagination.pageSize,
     preferencesReady,
-    sorting,
+    sortBy,
+    sortOrder,
     showMetricQuickControls,
     tableInternalScroll,
     view,
@@ -1025,17 +1053,23 @@ export default function Home() {
     [posts, filters],
   );
   const activeSorting = useMemo(
-    () => sortRulesFromState(sorting),
-    [sorting],
+    () => toSortRule(sortBy, sortOrder),
+    [sortBy, sortOrder],
   );
   const sortedPosts = useMemo(
-    () => sortPosts(filteredPosts, activeSorting),
-    [activeSorting, filteredPosts],
+    () => sortPosts(filteredPosts, activeSorting, selectedCoreMetricKeys),
+    [activeSorting, filteredPosts, selectedCoreMetricKeys],
   );
   const totals = useMemo(() => calculateTotals(filteredPosts), [filteredPosts]);
   const chartData = useMemo(
-    () => buildChartData(filteredPosts, chartGrouping, activeSorting),
-    [activeSorting, chartGrouping, filteredPosts],
+    () =>
+      buildChartData(
+        filteredPosts,
+        chartGrouping,
+        activeSorting,
+        selectedCoreMetricKeys,
+      ),
+    [activeSorting, chartGrouping, filteredPosts, selectedCoreMetricKeys],
   );
   const pages = useMemo(
     () => [...new Set(posts.map((post) => post.pageName))].sort(),
@@ -1128,6 +1162,7 @@ export default function Home() {
       {
         id: "publishedAt",
         accessorKey: "publishedAt",
+        sortDescFirst: true,
         header: ({ column }) => (
           <button
             className="sort-header"
@@ -1150,15 +1185,13 @@ export default function Home() {
         id: key,
         accessorFn: (post) => getMetricValue(post, key),
         sortUndefined: "last",
+        sortDescFirst: true,
         header: ({ column }) => {
           const toggleSorting = column.getToggleSortingHandler();
           return (
             <button
               className="sort-header"
-              onClick={(event) => {
-                setAnalyzeMetric(key);
-                toggleSorting?.(event);
-              }}
+              onClick={(event) => toggleSorting?.(event)}
               aria-label={`Sort by ${label}`}
             >
               {label} <ArrowDownUp size={13} />
@@ -1179,26 +1212,36 @@ export default function Home() {
     return [...base, ...metricColumns];
   }, [copiedPostId, copyPostTitle, extremes]);
 
+  const sortingState = useMemo<SortingState>(
+    () => [{ id: sortBy, desc: sortOrder === "desc" }],
+    [sortBy, sortOrder],
+  );
+
   const table = useReactTable({
     data: sortedPosts,
     columns,
-    state: { sorting, columnVisibility, pagination },
-    onSortingChange: setSorting,
+    state: { sorting: sortingState, columnVisibility, pagination },
+    onSortingChange: (updater) => {
+      const next =
+        typeof updater === "function" ? updater(sortingState) : updater;
+      const [rule] = next;
+      if (!rule) return;
+      setSortBy(rule.id as SortBy);
+      setSortOrder(rule.desc ? "desc" : "asc");
+    },
     onColumnVisibilityChange: setColumnVisibility,
     onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
     manualSorting: true,
     enableMultiSort: false,
+    enableSortingRemoval: false,
   });
 
   useEffect(() => {
     table.setPageIndex(0);
   }, [fileName, filters, table]);
 
-  const metricLabel =
-    tableMetricDefinitions.find((metric) => metric.key === analyzeMetric)
-      ?.label ?? "Engagement";
   const activeRangeCount = Object.values(filters.ranges).filter(
     (range) => range?.min !== undefined || range?.max !== undefined,
   ).length;
@@ -1251,24 +1294,42 @@ export default function Home() {
 
   function toggleMetricVisibility(key: TableMetricKey, checked: boolean) {
     const currentlyVisible = visibleMetricKeys.includes(key);
-    if (!checked && currentlyVisible && visibleMetricKeys.length === 1) return;
+    const isCoreMetric = CORE_METRIC_SET.has(key);
+    if (
+      !checked &&
+      currentlyVisible &&
+      isCoreMetric &&
+      selectedCoreMetricKeys.length === 1
+    ) {
+      return;
+    }
 
-    if (!checked && analyzeMetric === key) {
-      const nextMetric = visibleMetricKeys.find((metric) => metric !== key);
-      if (!nextMetric) return;
-      setAnalyzeMetric(nextMetric);
-      if (sorting[0]?.id === key) {
-        setSorting([{ id: nextMetric, desc: sorting[0].desc }]);
-      }
+    if (!checked && sortBy === key) {
+      const remainingCore = selectedCoreMetricKeys.filter(
+        (metric) => metric !== key,
+      );
+      setSortBy(
+        remainingCore.length > 1
+          ? "overallPerformance"
+          : (remainingCore[0] ?? "views"),
+      );
     }
 
     setColumnVisibility((current) => ({ ...current, [key]: checked }));
   }
 
-  function selectAnalyzeMetric(metric: TableMetricKey) {
-    setAnalyzeMetric(metric);
-    setColumnVisibility((current) => ({ ...current, [metric]: true }));
-    setSorting([{ id: metric, desc: true }]);
+  function selectSortField(nextSortBy: SortBy) {
+    setSortBy(nextSortBy);
+    setSortOrder("desc");
+    if (
+      nextSortBy !== "publishedAt" &&
+      nextSortBy !== "overallPerformance"
+    ) {
+      setColumnVisibility((current) => ({
+        ...current,
+        [nextSortBy]: true,
+      }));
+    }
   }
 
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -1314,8 +1375,8 @@ export default function Home() {
 
   function resetFilters() {
     setFilters(defaultFilters);
-    setSorting([{ id: "views", desc: true }]);
-    setAnalyzeMetric("views");
+    setSortBy("views");
+    setSortOrder("desc");
     setColumnVisibility((current) => ({ ...current, views: true }));
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }
@@ -1329,24 +1390,12 @@ export default function Home() {
     const defaults = DEFAULT_DASHBOARD_PREFERENCES;
     setView(defaults.view);
     setColumnVisibility(visibilityFromMetrics(defaults.visibleMetrics));
-    setAnalyzeMetric(defaults.analyzeMetric);
-    setSorting(defaults.sorting as SortingState);
+    setSortBy(defaults.sortBy);
+    setSortOrder(defaults.sortOrder);
     setChartGrouping(defaults.chartGrouping);
     setShowMetricQuickControls(defaults.showMetricQuickControls);
     setTableInternalScroll(defaults.tableInternalScroll);
     setPagination({ pageIndex: 0, pageSize: defaults.pageSize });
-  }
-
-  function updateSort(choice: string) {
-    if (choice === "source") setSorting([]);
-    if (choice === "newest")
-      setSorting([{ id: "publishedAt", desc: true }]);
-    if (choice === "oldest")
-      setSorting([{ id: "publishedAt", desc: false }]);
-    if (choice === "highest")
-      setSorting([{ id: analyzeMetric, desc: true }]);
-    if (choice === "lowest")
-      setSorting([{ id: analyzeMetric, desc: false }]);
   }
 
   function handleChartDatumClick(datum: ChartDatum) {
@@ -1366,16 +1415,17 @@ export default function Home() {
     });
   }
 
-  const currentSort =
-    !sorting.length
-      ? "source"
-      : sorting[0]?.id === "publishedAt"
-        ? sorting[0]?.desc
-          ? "newest"
-          : "oldest"
-        : sorting[0]?.desc === false
-          ? "lowest"
-          : "highest";
+  const customDateValid = isCustomDateRangeValid(
+    filters.customStart,
+    filters.customEnd,
+  );
+  const additionalSortMetrics = tableMetricDefinitions.filter(
+    ({ key }) => !CORE_METRIC_SET.has(key) && visibleMetricKeys.includes(key),
+  );
+  const chooserMetricDefinition =
+    sortBy !== "publishedAt" && sortBy !== "overallPerformance"
+      ? tableMetricDefinitions.find(({ key }) => key === sortBy)
+      : null;
 
   return (
     <>
@@ -1485,7 +1535,163 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="control-bar">
+          <div className="ranking-controls" aria-label="Ranking controls">
+            <section className="ranking-control-card">
+              <div className="ranking-control-heading">
+                <span>1</span>
+                <div>
+                  <strong>Date range</strong>
+                  <small>Anchored to the latest post</small>
+                </div>
+              </div>
+              <select
+                value={filters.datePreset}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    datePreset: event.target.value as DatePreset,
+                  }))
+                }
+                aria-label="Date range"
+              >
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="3m">Last 3 months</option>
+                <option value="6m">Last 6 months</option>
+                <option value="custom">Custom range</option>
+              </select>
+            </section>
+
+            <section className="ranking-control-card metrics-display-card">
+              <div className="ranking-control-heading">
+                <span>2</span>
+                <div>
+                  <strong>Metrics to display</strong>
+                  <small>Select one or more performance signals</small>
+                </div>
+              </div>
+              <div
+                className="core-metric-buttons"
+                role="group"
+                aria-label="Metrics to display"
+              >
+                {coreMetricDefinitions.map(({ key, label, chartColor }) => {
+                  const active = selectedCoreMetricKeys.includes(key);
+                  const lastCore =
+                    active && selectedCoreMetricKeys.length === 1;
+                  return (
+                    <button
+                      type="button"
+                      key={key}
+                      className={active ? "active" : ""}
+                      aria-pressed={active}
+                      disabled={lastCore}
+                      title={
+                        lastCore
+                          ? "At least one performance metric must remain selected"
+                          : `${active ? "Hide" : "Show"} ${label}`
+                      }
+                      onClick={() => toggleMetricVisibility(key, !active)}
+                    >
+                      <i style={{ backgroundColor: chartColor }} />
+                      {label}
+                      {active ? <Check size={12} /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="ranking-control-card">
+              <div className="ranking-control-heading">
+                <span>3</span>
+                <div>
+                  <strong>Sort by</strong>
+                  <small>Choose the primary ranking signal</small>
+                </div>
+              </div>
+              <select
+                value={sortBy}
+                onChange={(event) =>
+                  selectSortField(event.target.value as SortBy)
+                }
+                aria-label="Sort posts by"
+              >
+                <option value="overallPerformance">
+                  Overall performance
+                </option>
+                <optgroup label="Core metrics">
+                  {coreMetricDefinitions.map(({ key, label }) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </optgroup>
+                <option value="publishedAt">Post date</option>
+                {additionalSortMetrics.length ? (
+                  <optgroup label="Additional visible metrics">
+                    {additionalSortMetrics.map(({ key, label }) => (
+                      <option key={key} value={key}>
+                        {label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+              {sortBy === "overallPerformance" ? (
+                <p className="balanced-ranking-note">
+                  <Sparkles size={12} />
+                  Balances {selectedCoreMetricKeys.length} selected{" "}
+                  {selectedCoreMetricKeys.length === 1
+                    ? "metric"
+                    : "metrics"}{" "}
+                  equally.
+                </p>
+              ) : null}
+            </section>
+
+            <section className="ranking-control-card">
+              <div className="ranking-control-heading">
+                <span>4</span>
+                <div>
+                  <strong>Order</strong>
+                  <small>
+                    {sortBy === "publishedAt"
+                      ? "Arrange posts by publish date"
+                      : "Arrange posts by performance"}
+                  </small>
+                </div>
+              </div>
+              <div
+                className="order-toggle"
+                role="group"
+                aria-label="Sort order"
+              >
+                <button
+                  type="button"
+                  className={sortOrder === "desc" ? "active" : ""}
+                  aria-pressed={sortOrder === "desc"}
+                  onClick={() => setSortOrder("desc")}
+                >
+                  {sortBy === "publishedAt"
+                    ? "Newest to oldest"
+                    : "Highest to lowest"}
+                </button>
+                <button
+                  type="button"
+                  className={sortOrder === "asc" ? "active" : ""}
+                  aria-pressed={sortOrder === "asc"}
+                  onClick={() => setSortOrder("asc")}
+                >
+                  {sortBy === "publishedAt"
+                    ? "Oldest to newest"
+                    : "Lowest to highest"}
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <div className="control-bar utility-control-bar">
             <label className="search-control">
               <span className="sr-only">Search posts</span>
               <Search size={16} />
@@ -1500,63 +1706,6 @@ export default function Home() {
                 placeholder="Search posts or page…"
                 data-testid="search-posts"
               />
-            </label>
-
-            <label className="select-control">
-              <span>Analyze</span>
-              <select
-                value={analyzeMetric}
-                onChange={(event) =>
-                  selectAnalyzeMetric(event.target.value as TableMetricKey)
-                }
-                aria-label="Analyze metric"
-              >
-                {tableMetricDefinitions.map((metric) => (
-                  <option key={metric.key} value={metric.key}>
-                    {metric.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="select-control">
-              <span>Date</span>
-              <select
-                value={filters.datePreset}
-                onChange={(event) =>
-                  setFilters((current) => ({
-                    ...current,
-                    datePreset: event.target.value as DatePreset,
-                  }))
-                }
-                aria-label="Date range"
-              >
-                <option value="7d">Last 7 days</option>
-                <option value="30d">Last 30 days</option>
-                <option value="6m">Last 6 months</option>
-                <option value="1y">Last year</option>
-                <option value="all">All time</option>
-                <option value="custom">Custom range</option>
-              </select>
-            </label>
-
-            <label className="select-control">
-              <span>Sort</span>
-              <select
-                value={currentSort}
-                onChange={(event) => updateSort(event.target.value)}
-                aria-label="Sort posts"
-              >
-                <option value="highest">
-                  Highest {metricLabel.toLowerCase()}
-                </option>
-                <option value="lowest">
-                  Lowest {metricLabel.toLowerCase()}
-                </option>
-                <option value="newest">Newest first</option>
-                <option value="oldest">Oldest first</option>
-                <option value="source">CSV order</option>
-              </select>
             </label>
 
             {view !== "table" ? (
@@ -1604,6 +1753,7 @@ export default function Home() {
                 <input
                   type="date"
                   value={filters.customStart}
+                  max={filters.customEnd || undefined}
                   onChange={(event) =>
                     setFilters((current) => ({
                       ...current,
@@ -1617,6 +1767,7 @@ export default function Home() {
                 <input
                   type="date"
                   value={filters.customEnd}
+                  min={filters.customStart || undefined}
                   onChange={(event) =>
                     setFilters((current) => ({
                       ...current,
@@ -1625,7 +1776,11 @@ export default function Home() {
                   }
                 />
               </label>
-              <span>Custom dates include the full selected days.</span>
+              <span className={customDateValid ? "" : "date-range-error"}>
+                {customDateValid
+                  ? "Custom dates include the full selected days."
+                  : "The end date must be on or after the start date."}
+              </span>
             </div>
           ) : null}
 
@@ -1731,7 +1886,11 @@ export default function Home() {
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={checked && visibleMetricKeys.length === 1}
+                          disabled={
+                            checked &&
+                            CORE_METRIC_SET.has(key) &&
+                            selectedCoreMetricKeys.length === 1
+                          }
                           onChange={(event) =>
                             toggleMetricVisibility(key, event.target.checked)
                           }
@@ -2206,14 +2365,35 @@ export default function Home() {
                       <small>{post.pageName}</small>
                     </div>
                     <b>
-                      {metricLabel}
-                      <em>
-                        {analyzeMetric === "engagementRate"
-                          ? formatPercent(post.engagementRate)
-                          : formatCount(
-                              Number(getMetricValue(post, analyzeMetric) ?? 0),
-                            )}
-                      </em>
+                      {sortBy === "overallPerformance" ? (
+                        <>
+                          Balanced across
+                          <em>
+                            {coreMetricDefinitions
+                              .filter(({ key }) =>
+                                selectedCoreMetricKeys.includes(key),
+                              )
+                              .map(({ compactLabel }) => compactLabel)
+                              .join(" + ")}
+                          </em>
+                        </>
+                      ) : sortBy === "publishedAt" ? (
+                        <>
+                          Published
+                          <em>{formatDate(post.publishedAt)}</em>
+                        </>
+                      ) : (
+                        <>
+                          {chooserMetricDefinition?.label ?? "Metric"}
+                          <em>
+                            {sortBy === "engagementRate"
+                              ? formatPercent(post.engagementRate)
+                              : formatCount(
+                                  Number(getMetricValue(post, sortBy) ?? 0),
+                                )}
+                          </em>
+                        </>
+                      )}
                     </b>
                     <ExternalLink size={15} />
                   </a>

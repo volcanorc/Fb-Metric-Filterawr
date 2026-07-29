@@ -12,6 +12,13 @@ export type MetricKey =
   | "photoClicks";
 
 export type TableMetricKey = MetricKey | "engagementRate";
+export type CorePerformanceMetricKey =
+  | "views"
+  | "reach"
+  | "engagement"
+  | "reactions"
+  | "comments"
+  | "shares";
 export type DashboardView = "table" | "bars" | "lines";
 export type ChartGrouping = "post" | "day" | "week" | "month";
 export type ChartMotionPhase = "idle" | "series-change" | "data-change";
@@ -23,11 +30,12 @@ export interface ChartMetricTransitionState {
   phase: ChartMotionPhase;
   revision: number;
 }
-export type DatePreset = "7d" | "30d" | "6m" | "1y" | "all" | "custom";
+export type DatePreset = "7d" | "30d" | "3m" | "6m" | "custom";
 export const DEFAULT_DATE_PRESET: DatePreset = "30d";
 export type NumericRange = { min?: number; max?: number };
-export type SortField = TableMetricKey | "publishedAt";
-export type SortRule = { id: SortField; desc: boolean };
+export type SortBy = TableMetricKey | "overallPerformance" | "publishedAt";
+export type SortOrder = "desc" | "asc";
+export type SortRule = { id: SortBy; desc: boolean };
 
 export interface PostMetric {
   postId: string;
@@ -110,12 +118,12 @@ export interface ChartInteractionState {
   activeIndex?: number | string | null;
 }
 
-export interface DashboardPreferencesV2 {
-  version: 2;
+export interface DashboardPreferencesV3 {
+  version: 3;
   view: DashboardView;
   visibleMetrics: TableMetricKey[];
-  analyzeMetric: TableMetricKey;
-  sorting: SortRule[];
+  sortBy: SortBy;
+  sortOrder: SortOrder;
   chartGrouping: ChartGrouping;
   pageSize: 25 | 50 | 100;
   showMetricQuickControls: boolean;
@@ -130,7 +138,8 @@ export interface MetricDefinition {
   lineDash?: string;
 }
 
-export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v2";
+export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v3";
+export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v2";
 export const LEGACY_VISIBILITY_KEY = "postpulse-column-visibility";
 export const LEGACY_VIEW_KEY = "postpulse-view";
 
@@ -209,14 +218,23 @@ export const metricDefinitions = tableMetricDefinitions.filter(
     metric.key !== "engagementRate",
 );
 
+export const CORE_PERFORMANCE_METRICS: CorePerformanceMetricKey[] = [
+  "views",
+  "reach",
+  "engagement",
+  "reactions",
+  "comments",
+  "shares",
+];
+
 export const DEFAULT_VISIBLE_METRICS: TableMetricKey[] = ["views"];
 
-export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV2 = {
-  version: 2,
+export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV3 = {
+  version: 3,
   view: "table",
   visibleMetrics: DEFAULT_VISIBLE_METRICS,
-  analyzeMetric: "views",
-  sorting: [{ id: "views", desc: true }],
+  sortBy: "views",
+  sortOrder: "desc",
   chartGrouping: "post",
   pageSize: 25,
   showMetricQuickControls: true,
@@ -225,6 +243,9 @@ export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV2 = {
 
 const metricKeys = new Set<TableMetricKey>(
   tableMetricDefinitions.map(({ key }) => key),
+);
+const corePerformanceMetricKeys = new Set<CorePerformanceMetricKey>(
+  CORE_PERFORMANCE_METRICS,
 );
 const viewKeys = new Set<DashboardView>(["table", "bars", "lines"]);
 const groupingKeys = new Set<ChartGrouping>(["post", "day", "week", "month"]);
@@ -243,11 +264,10 @@ const requiredColumns = [
 
 type RawRow = Record<string, string | undefined>;
 
-function cloneDefaultPreferences(): DashboardPreferencesV2 {
+function cloneDefaultPreferences(): DashboardPreferencesV3 {
   return {
     ...DEFAULT_DASHBOARD_PREFERENCES,
     visibleMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics],
-    sorting: DEFAULT_DASHBOARD_PREFERENCES.sorting.map((rule) => ({ ...rule })),
   };
 }
 
@@ -288,41 +308,125 @@ function validateSorting(value: unknown): SortRule[] | null {
   ) {
     return null;
   }
-  const id = first.id as SortField;
-  if (id !== "publishedAt" && !metricKeys.has(id as TableMetricKey)) return null;
+  const id = first.id as SortBy;
+  if (
+    id !== "publishedAt" &&
+    id !== "overallPerformance" &&
+    !metricKeys.has(id as TableMetricKey)
+  ) {
+    return null;
+  }
   return [{ id, desc: first.desc }];
+}
+
+function validateSortBy(value: unknown): SortBy | null {
+  if (value === "publishedAt" || value === "overallPerformance") return value;
+  return typeof value === "string" && metricKeys.has(value as TableMetricKey)
+    ? (value as TableMetricKey)
+    : null;
+}
+
+function validateSortOrder(value: unknown): SortOrder | null {
+  return value === "desc" || value === "asc" ? value : null;
+}
+
+function ensureCoreMetricVisible(
+  visibleMetrics: TableMetricKey[],
+): TableMetricKey[] {
+  return visibleMetrics.some((key) =>
+    corePerformanceMetricKeys.has(key as CorePerformanceMetricKey),
+  )
+    ? visibleMetrics
+    : ["views", ...visibleMetrics];
+}
+
+function ensureSortMetricVisible(
+  visibleMetrics: TableMetricKey[],
+  sortBy: SortBy,
+): TableMetricKey[] {
+  if (
+    sortBy === "publishedAt" ||
+    sortBy === "overallPerformance" ||
+    visibleMetrics.includes(sortBy)
+  ) {
+    return visibleMetrics;
+  }
+  return [...visibleMetrics, sortBy];
 }
 
 export function parseDashboardPreferences(
   storedValue: string | null,
   legacyVisibilityValue: string | null = null,
   legacyViewValue: string | null = null,
-): DashboardPreferencesV2 {
+): DashboardPreferencesV3 {
   const defaults = cloneDefaultPreferences();
   const stored = parseJson(storedValue);
 
-  if (isRecord(stored) && stored.version === 2) {
-    const visibleMetrics =
-      validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
-    const analyzeMetric =
-      typeof stored.analyzeMetric === "string" &&
-      metricKeys.has(stored.analyzeMetric as TableMetricKey)
-        ? (stored.analyzeMetric as TableMetricKey)
-        : defaults.analyzeMetric;
-    const finalVisibleMetrics = visibleMetrics.includes(analyzeMetric)
-      ? visibleMetrics
-      : [...visibleMetrics, analyzeMetric];
+  if (isRecord(stored) && stored.version === 3) {
+    const sortBy = validateSortBy(stored.sortBy) ?? defaults.sortBy;
+    const visibleMetrics = ensureSortMetricVisible(
+      ensureCoreMetricVisible(
+        validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics,
+      ),
+      sortBy,
+    );
 
     return {
-      version: 2,
+      version: 3,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
           ? (stored.view as DashboardView)
           : defaults.view,
-      visibleMetrics: finalVisibleMetrics,
-      analyzeMetric,
-      sorting: validateSorting(stored.sorting) ?? defaults.sorting,
+      visibleMetrics,
+      sortBy,
+      sortOrder: validateSortOrder(stored.sortOrder) ?? defaults.sortOrder,
+      chartGrouping:
+        typeof stored.chartGrouping === "string" &&
+        groupingKeys.has(stored.chartGrouping as ChartGrouping)
+          ? (stored.chartGrouping as ChartGrouping)
+          : defaults.chartGrouping,
+      pageSize:
+        typeof stored.pageSize === "number" && pageSizes.has(stored.pageSize)
+          ? (stored.pageSize as 25 | 50 | 100)
+          : defaults.pageSize,
+      showMetricQuickControls:
+        typeof stored.showMetricQuickControls === "boolean"
+          ? stored.showMetricQuickControls
+          : defaults.showMetricQuickControls,
+      tableInternalScroll:
+        typeof stored.tableInternalScroll === "boolean"
+          ? stored.tableInternalScroll
+          : defaults.tableInternalScroll,
+    };
+  }
+
+  if (isRecord(stored) && stored.version === 2) {
+    const legacySorting = validateSorting(stored.sorting);
+    const legacyAnalyzeMetric =
+      typeof stored.analyzeMetric === "string" &&
+      metricKeys.has(stored.analyzeMetric as TableMetricKey)
+        ? (stored.analyzeMetric as TableMetricKey)
+        : null;
+    const sortBy =
+      legacySorting?.[0]?.id ?? legacyAnalyzeMetric ?? defaults.sortBy;
+    const visibleMetrics = ensureSortMetricVisible(
+      ensureCoreMetricVisible(
+        validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics,
+      ),
+      sortBy,
+    );
+
+    return {
+      version: 3,
+      view:
+        typeof stored.view === "string" &&
+        viewKeys.has(stored.view as DashboardView)
+          ? (stored.view as DashboardView)
+          : defaults.view,
+      visibleMetrics,
+      sortBy,
+      sortOrder: legacySorting?.[0]?.desc === false ? "asc" : "desc",
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -358,10 +462,9 @@ export function parseDashboardPreferences(
 
   return {
     ...defaults,
-    visibleMetrics:
-      legacyVisible?.length && legacyVisible.includes(defaults.analyzeMetric)
-        ? legacyVisible
-        : defaults.visibleMetrics,
+    visibleMetrics: ensureCoreMetricVisible(
+      legacyVisible?.length ? legacyVisible : defaults.visibleMetrics,
+    ),
     view: legacyView ?? defaults.view,
   };
 }
@@ -545,13 +648,25 @@ function endOfDay(timestamp: number): Date {
   return date;
 }
 
+function subtractCalendarMonths(date: Date, months: number): void {
+  const day = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() - months);
+  const lastDayInTargetMonth = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    0,
+  ).getDate();
+  date.setDate(Math.min(day, lastDayInTargetMonth));
+}
+
 export function getDateBounds(
   posts: PostMetric[],
   preset: DatePreset,
   customStart: string,
   customEnd: string,
 ): { start: number; end: number } | null {
-  if (!posts.length || preset === "all") return null;
+  if (!posts.length) return null;
   const latest = Math.max(...posts.map((post) => post.publishedAt));
   const end = endOfDay(latest);
   const start = startOfDay(latest);
@@ -563,14 +678,31 @@ export function getDateBounds(
     const parsedEnd = customEnd
       ? endOfDay(new Date(`${customEnd}T00:00:00`).getTime()).getTime()
       : Number.POSITIVE_INFINITY;
+    if (parsedStart > parsedEnd) {
+      return {
+        start: Number.POSITIVE_INFINITY,
+        end: Number.NEGATIVE_INFINITY,
+      };
+    }
     return { start: parsedStart, end: parsedEnd };
   }
 
   if (preset === "7d") start.setDate(start.getDate() - 6);
   if (preset === "30d") start.setDate(start.getDate() - 29);
-  if (preset === "6m") start.setMonth(start.getMonth() - 6);
-  if (preset === "1y") start.setFullYear(start.getFullYear() - 1);
+  if (preset === "3m") subtractCalendarMonths(start, 3);
+  if (preset === "6m") subtractCalendarMonths(start, 6);
   return { start: start.getTime(), end: end.getTime() };
+}
+
+export function isCustomDateRangeValid(
+  customStart: string,
+  customEnd: string,
+): boolean {
+  if (!customStart || !customEnd) return true;
+  return (
+    new Date(`${customStart}T00:00:00`).getTime() <=
+    new Date(`${customEnd}T00:00:00`).getTime()
+  );
 }
 
 export function filterPosts(
@@ -629,26 +761,87 @@ function compareNullableNumbers(
   return desc ? right - left : left - right;
 }
 
+type CorePerformanceValues = Record<CorePerformanceMetricKey, number>;
+
+function getSelectedCoreMetrics(
+  selectedMetrics: readonly CorePerformanceMetricKey[],
+): CorePerformanceMetricKey[] {
+  const selected = CORE_PERFORMANCE_METRICS.filter((key) =>
+    selectedMetrics.includes(key),
+  );
+  return selected.length ? selected : ["views"];
+}
+
+export function calculateBalancedPerformanceScores<
+  T extends CorePerformanceValues,
+>(
+  items: readonly T[],
+  selectedMetrics: readonly CorePerformanceMetricKey[],
+): number[] {
+  if (!items.length) return [];
+  const selected = getSelectedCoreMetrics(selectedMetrics);
+  const informativeMetrics = selected.filter((key) =>
+    items.some((item) => item[key] > 0),
+  );
+  if (!informativeMetrics.length) return items.map(() => 0);
+
+  const maxima = Object.fromEntries(
+    informativeMetrics.map((key) => [
+      key,
+      Math.max(...items.map((item) => item[key])),
+    ]),
+  ) as Partial<Record<CorePerformanceMetricKey, number>>;
+
+  return items.map((item) => {
+    const normalized = informativeMetrics.map(
+      (key) => item[key] / Number(maxima[key]),
+    );
+    if (normalized.some((value) => value === 0)) return 0;
+    const meanLog =
+      normalized.reduce((sum, value) => sum + Math.log(value), 0) /
+      normalized.length;
+    return Math.exp(meanLog) * 100;
+  });
+}
+
 export function sortPosts(
   posts: PostMetric[],
   sorting: SortRule[],
+  selectedMetrics: readonly CorePerformanceMetricKey[] = ["views"],
 ): PostMetric[] {
   if (!sorting.length) return [...posts];
   const [{ id, desc }] = sorting;
+  const performanceScores =
+    id === "overallPerformance"
+      ? calculateBalancedPerformanceScores(posts, selectedMetrics)
+      : null;
 
   return posts
-    .map((post, sourceIndex) => ({ post, sourceIndex }))
+    .map((post, sourceIndex) => ({
+      post,
+      sourceIndex,
+      performanceScore: performanceScores?.[sourceIndex] ?? 0,
+    }))
     .sort((left, right) => {
       const comparison =
         id === "publishedAt"
           ? desc
             ? right.post.publishedAt - left.post.publishedAt
             : left.post.publishedAt - right.post.publishedAt
-          : compareNullableNumbers(
-              getMetricValue(left.post, id),
-              getMetricValue(right.post, id),
-              desc,
-            );
+          : id === "overallPerformance"
+            ? desc
+              ? right.performanceScore - left.performanceScore
+              : left.performanceScore - right.performanceScore
+            : compareNullableNumbers(
+                getMetricValue(left.post, id),
+                getMetricValue(right.post, id),
+                desc,
+              );
+      if (comparison) return comparison;
+      if (id === "overallPerformance") {
+        const newestFirst = right.post.publishedAt - left.post.publishedAt;
+        if (newestFirst) return newestFirst;
+      }
       return comparison || left.sourceIndex - right.sourceIndex;
     })
     .map(({ post }) => post);
@@ -702,8 +895,9 @@ function toChartDatum(
   grouping: ChartGrouping,
   groupPosts: PostMetric[],
   sorting: SortRule[],
+  selectedMetrics: readonly CorePerformanceMetricKey[],
 ): ChartDatum {
-  const sortedGroup = sortPosts(groupPosts, sorting);
+  const sortedGroup = sortPosts(groupPosts, sorting, selectedMetrics);
   const totals = calculateTotals(sortedGroup);
   const single = grouping === "post" ? sortedGroup[0] : null;
   return {
@@ -740,22 +934,40 @@ function toChartDatum(
 function sortChartData(
   data: ChartDatum[],
   sorting: SortRule[],
+  selectedMetrics: readonly CorePerformanceMetricKey[],
 ): ChartDatum[] {
   if (!sorting.length) return data;
   const [{ id, desc }] = sorting;
+  const performanceScores =
+    id === "overallPerformance"
+      ? calculateBalancedPerformanceScores(data, selectedMetrics)
+      : null;
   return data
-    .map((datum, sourceIndex) => ({ datum, sourceIndex }))
+    .map((datum, sourceIndex) => ({
+      datum,
+      sourceIndex,
+      performanceScore: performanceScores?.[sourceIndex] ?? 0,
+    }))
     .sort((left, right) => {
       const comparison =
         id === "publishedAt"
           ? desc
             ? right.datum.start - left.datum.start
             : left.datum.start - right.datum.start
-          : compareNullableNumbers(
-              left.datum[id],
-              right.datum[id],
-              desc,
-            );
+          : id === "overallPerformance"
+            ? desc
+              ? right.performanceScore - left.performanceScore
+              : left.performanceScore - right.performanceScore
+            : compareNullableNumbers(
+                left.datum[id],
+                right.datum[id],
+                desc,
+              );
+      if (comparison) return comparison;
+      if (id === "overallPerformance") {
+        const newestFirst = right.datum.start - left.datum.start;
+        if (newestFirst) return newestFirst;
+      }
       return comparison || left.sourceIndex - right.sourceIndex;
     })
     .map(({ datum }) => datum);
@@ -790,11 +1002,12 @@ export function buildChartData(
   posts: PostMetric[],
   grouping: ChartGrouping,
   sorting: SortRule[],
+  selectedMetrics: readonly CorePerformanceMetricKey[] = ["views"],
 ): ChartDatum[] {
   if (!posts.length) return [];
 
   if (grouping === "post") {
-    const data = sortPosts(posts, sorting).map((post) =>
+    const data = sortPosts(posts, sorting, selectedMetrics).map((post) =>
       toChartDatum(
         post.postId,
         post.publishedAt,
@@ -802,6 +1015,7 @@ export function buildChartData(
         grouping,
         [post],
         sorting,
+        selectedMetrics,
       ),
     );
     return normalizeChartData(data);
@@ -821,9 +1035,10 @@ export function buildChartData(
       grouping,
       groupPosts,
       sorting,
+      selectedMetrics,
     ),
   );
-  return normalizeChartData(sortChartData(data, sorting));
+  return normalizeChartData(sortChartData(data, sorting, selectedMetrics));
 }
 
 export function getChartDataSignature(data: ChartDatum[]): string {

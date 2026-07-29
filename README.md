@@ -1,6 +1,6 @@
 # PostPulse
 
-A private Facebook post metrics dashboard built with React and TypeScript.
+A browser-local Facebook post metrics dashboard built with React and TypeScript.
 CSV files are parsed in the browser and are never uploaded to an application
 database.
 
@@ -9,6 +9,7 @@ database.
 - Sample Facebook export loaded by default
 - Local CSV replacement with validation feedback
 - Sortable, filterable post table with proportional metric bars
+- Balanced multi-metric ranking across selected performance signals
 - Separate, clickable multi-metric bar and line charts
 - Date presets anchored to the latest post in the dataset
 - Device-saved display preferences and configurable metric visibility

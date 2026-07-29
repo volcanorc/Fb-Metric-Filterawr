@@ -549,12 +549,189 @@ summary:focus-visible {
   box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
 }
 
+.ranking-controls {
+  display: grid;
+  grid-template-columns:
+    minmax(180px, 0.85fr)
+    minmax(360px, 1.8fr)
+    minmax(210px, 1fr)
+    minmax(230px, 1.1fr);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.ranking-control-card {
+  min-width: 0;
+  padding: 16px 17px 17px;
+  border-right: 1px solid var(--line);
+  background: rgb(255 255 255 / 72%);
+}
+
+.ranking-control-card:last-child {
+  border-right: 0;
+}
+
+.ranking-control-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 31px;
+  margin-bottom: 11px;
+}
+
+.ranking-control-heading > span {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  flex: 0 0 23px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--blue-soft);
+  color: var(--blue-deep);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.ranking-control-heading > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ranking-control-heading strong {
+  color: var(--ink);
+  font-size: 11px;
+  letter-spacing: 0.015em;
+}
+
+.ranking-control-heading small {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 9px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ranking-control-card > select {
+  width: 100%;
+  height: 38px;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  outline: 0;
+  background: white;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ranking-control-card > select:focus-visible {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
+}
+
+.core-metric-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.core-metric-buttons button {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: white;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.core-metric-buttons button i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 99px;
+}
+
+.core-metric-buttons button svg {
+  margin-left: 1px;
+}
+
+.core-metric-buttons button.active {
+  border-color: rgb(37 99 235 / 32%);
+  background: var(--blue-soft);
+  color: var(--blue-deep);
+}
+
+.core-metric-buttons button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.order-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+
+.order-toggle button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.order-toggle button.active {
+  background: white;
+  color: var(--blue-deep);
+  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
+}
+
+.balanced-ranking-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 7px 1px 0;
+  color: var(--blue-deep);
+  font-size: 9px;
+  line-height: 1.25;
+}
+
+.balanced-ranking-note svg {
+  flex: 0 0 auto;
+}
+
 .control-bar {
   gap: 8px;
   padding: 13px 24px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background: #fbfcfd;
+}
+
+.utility-control-bar {
+  border-top: 0;
 }
 
 .search-control {
@@ -675,6 +852,11 @@ summary:focus-visible {
   margin: 0 0 9px 5px;
   color: var(--subtle);
   font-size: 10px;
+}
+
+.custom-date-row > span.date-range-error {
+  color: #b45309;
+  font-weight: 700;
 }
 
 .advanced-panel {
@@ -1996,6 +2178,18 @@ td time {
     flex-wrap: wrap;
   }
 
+  .ranking-controls {
+    grid-template-columns: minmax(220px, 0.85fr) minmax(400px, 1.5fr);
+  }
+
+  .ranking-control-card:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .ranking-control-card:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+
   .reset-button {
     margin-left: 0;
   }
@@ -2060,6 +2254,24 @@ td time {
   .view-toggle button {
     flex: 1;
     justify-content: center;
+  }
+
+  .ranking-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .ranking-control-card,
+  .ranking-control-card:nth-child(2n) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .ranking-control-card:last-child {
+    border-bottom: 0;
+  }
+
+  .ranking-control-heading small {
+    white-space: normal;
   }
 
   .search-control {
@@ -2297,6 +2509,15 @@ td time {
   .control-bar,
   .custom-date-row {
     padding-inline: 15px;
+  }
+
+  .ranking-control-card {
+    padding-inline: 15px;
+  }
+
+  .core-metric-buttons button {
+    flex: 1 1 calc(50% - 4px);
+    justify-content: center;
   }
 
   .workspace-card > .metric-quick-controls {

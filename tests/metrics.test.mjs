@@ -4,12 +4,15 @@ import {
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   buildChartData,
+  calculateBalancedPerformanceScores,
   calculateTotals,
   completeChartMetricExit,
   filterPosts,
   formatBarValueLabel,
   getChartDataSignature,
   getDisplayedRowNumber,
+  getDateBounds,
+  isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
   reconcileChartMetricTransition,
@@ -90,6 +93,49 @@ test("sorts table and chart source posts with the same rule", () => {
   );
 });
 
+test("balances selected metrics instead of rewarding one-metric outliers", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    {
+      ...base,
+      postId: "balanced",
+      publishedAt: base.publishedAt,
+      views: 100,
+      engagement: 100,
+    },
+    {
+      ...base,
+      postId: "views-outlier",
+      publishedAt: base.publishedAt - 1,
+      views: 120,
+      engagement: 20,
+    },
+    {
+      ...base,
+      postId: "engagement-outlier",
+      publishedAt: base.publishedAt - 2,
+      views: 20,
+      engagement: 120,
+    },
+  ];
+
+  const sorted = sortPosts(
+    posts,
+    [{ id: "overallPerformance", desc: true }],
+    ["views", "engagement"],
+  );
+  assert.equal(sorted[0].postId, "balanced");
+
+  const zeroComments = posts.map((post) => ({ ...post, comments: 0 }));
+  const scores = calculateBalancedPerformanceScores(zeroComments, [
+    "views",
+    "comments",
+  ]);
+  assert.ok(Math.abs(scores[0] - 100 / 1.2) < 0.000001);
+  assert.equal(scores[1], 100);
+  assert.ok(Math.abs(scores[2] - 100 / 6) < 0.000001);
+});
+
 test("uses a latest-data anchored 30-day default date range", () => {
   assert.equal(DEFAULT_DATE_PRESET, "30d");
   const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
@@ -123,6 +169,30 @@ test("uses a latest-data anchored 30-day default date range", () => {
   );
 });
 
+test("supports three-month bounds and rejects reversed custom dates", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    { ...base, postId: "latest", publishedAt: new Date(2026, 6, 31).getTime() },
+  ];
+  const bounds = getDateBounds(posts, "3m", "", "");
+  assert.ok(bounds);
+  assert.equal(new Date(bounds.start).getMonth(), 3);
+  assert.equal(new Date(bounds.start).getDate(), 30);
+  assert.equal(isCustomDateRangeValid("2026-07-01", "2026-07-31"), true);
+  assert.equal(isCustomDateRangeValid("2026-08-01", "2026-07-31"), false);
+
+  const filtered = filterPosts(posts, {
+    search: "",
+    datePreset: "custom",
+    customStart: "2026-08-01",
+    customEnd: "2026-07-31",
+    pageName: "",
+    postType: "",
+    ranges: {},
+  });
+  assert.deepEqual(filtered, []);
+});
+
 test("builds one clickable normalized chart point per post by default", () => {
   const posts = parseFacebookCsv(SAMPLE_CSV).posts;
   const points = buildChartData(posts, "post", [
@@ -138,6 +208,41 @@ test("builds one clickable normalized chart point per post by default", () => {
   assert.ok(points.every((point) => point.permalink.startsWith("https://")));
   assert.equal(points[0].normalized.views, 100);
   assert.equal(points[2].normalized.comments, 0);
+});
+
+test("applies balanced ranking to posts and aggregated chart periods", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const day = 24 * 60 * 60 * 1000;
+  const posts = [
+    {
+      ...base,
+      postId: "balanced-period",
+      publishedAt: base.publishedAt,
+      views: 100,
+      engagement: 100,
+    },
+    {
+      ...base,
+      postId: "views-period",
+      publishedAt: base.publishedAt - day,
+      views: 180,
+      engagement: 15,
+    },
+    {
+      ...base,
+      postId: "engagement-period",
+      publishedAt: base.publishedAt - 2 * day,
+      views: 15,
+      engagement: 180,
+    },
+  ];
+  const points = buildChartData(
+    posts,
+    "day",
+    [{ id: "overallPerformance", desc: true }],
+    ["views", "engagement"],
+  );
+  assert.equal(points[0].posts[0].postId, "balanced-period");
 });
 
 test("gives chart transitions stable signatures and adaptive axis labels", () => {
@@ -231,14 +336,14 @@ test("keeps every post in large ungrouped chart datasets", () => {
   assert.equal(buildChartData(posts, "post", []).length, 500);
 });
 
-test("validates versioned preferences and keeps the Analyze metric visible", () => {
+test("validates V3 preferences and keeps the selected sort metric visible", () => {
   const preferences = parseDashboardPreferences(
     JSON.stringify({
-      version: 2,
+      version: 3,
       view: "lines",
       visibleMetrics: ["views"],
-      analyzeMetric: "comments",
-      sorting: [{ id: "comments", desc: false }],
+      sortBy: "comments",
+      sortOrder: "asc",
       chartGrouping: "month",
       pageSize: 50,
     }),
@@ -246,8 +351,8 @@ test("validates versioned preferences and keeps the Analyze metric visible", () 
 
   assert.equal(preferences.view, "lines");
   assert.deepEqual(preferences.visibleMetrics, ["views", "comments"]);
-  assert.equal(preferences.analyzeMetric, "comments");
-  assert.deepEqual(preferences.sorting, [{ id: "comments", desc: false }]);
+  assert.equal(preferences.sortBy, "comments");
+  assert.equal(preferences.sortOrder, "asc");
   assert.equal(preferences.chartGrouping, "month");
   assert.equal(preferences.pageSize, 50);
   assert.equal(preferences.showMetricQuickControls, true);
@@ -256,10 +361,8 @@ test("validates versioned preferences and keeps the Analyze metric visible", () 
 
 test("uses Views as the fresh default without changing valid saved layouts", () => {
   assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics, ["views"]);
-  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.analyzeMetric, "views");
-  assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.sorting, [
-    { id: "views", desc: true },
-  ]);
+  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.sortBy, "views");
+  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.sortOrder, "desc");
   assert.equal(
     DEFAULT_DASHBOARD_PREFERENCES.showMetricQuickControls,
     true,
@@ -280,8 +383,9 @@ test("uses Views as the fresh default without changing valid saved layouts", () 
     }),
   );
   assert.deepEqual(saved.visibleMetrics, ["reach", "comments"]);
-  assert.equal(saved.analyzeMetric, "reach");
-  assert.deepEqual(saved.sorting, [{ id: "reach", desc: false }]);
+  assert.equal(saved.version, 3);
+  assert.equal(saved.sortBy, "reach");
+  assert.equal(saved.sortOrder, "asc");
   assert.equal(saved.showMetricQuickControls, false);
   assert.equal(saved.tableInternalScroll, true);
 });
@@ -517,7 +621,7 @@ test("search still matches hashtags in the original CSV title", () => {
   const tagged = [{ ...posts[0], title: "Visible words #campaign" }];
   const filtered = filterPosts(tagged, {
     search: "#campaign",
-    datePreset: "all",
+    datePreset: "custom",
     customStart: "",
     customEnd: "",
     pageName: "",
