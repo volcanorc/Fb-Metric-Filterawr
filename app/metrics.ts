@@ -36,6 +36,11 @@ export type NumericRange = { min?: number; max?: number };
 export type SortBy = TableMetricKey | "overallPerformance" | "publishedAt";
 export type SortOrder = "desc" | "asc";
 export type SortRule = { id: SortBy; desc: boolean };
+export type ResultOrder =
+  | "performance-desc"
+  | "performance-asc"
+  | "date-desc"
+  | "date-asc";
 
 export interface PostMetric {
   postId: string;
@@ -118,12 +123,12 @@ export interface ChartInteractionState {
   activeIndex?: number | string | null;
 }
 
-export interface DashboardPreferencesV3 {
-  version: 3;
+export interface DashboardPreferencesV4 {
+  version: 4;
   view: DashboardView;
   visibleMetrics: TableMetricKey[];
-  sortBy: SortBy;
-  sortOrder: SortOrder;
+  rankingMetrics: CorePerformanceMetricKey[];
+  resultOrder: ResultOrder;
   chartGrouping: ChartGrouping;
   pageSize: 25 | 50 | 100;
   showMetricQuickControls: boolean;
@@ -138,8 +143,9 @@ export interface MetricDefinition {
   lineDash?: string;
 }
 
-export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v3";
-export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v2";
+export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v4";
+export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v3";
+export const LEGACY_V2_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v2";
 export const LEGACY_VISIBILITY_KEY = "postpulse-column-visibility";
 export const LEGACY_VIEW_KEY = "postpulse-view";
 
@@ -229,12 +235,12 @@ export const CORE_PERFORMANCE_METRICS: CorePerformanceMetricKey[] = [
 
 export const DEFAULT_VISIBLE_METRICS: TableMetricKey[] = ["views"];
 
-export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV3 = {
-  version: 3,
+export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV4 = {
+  version: 4,
   view: "table",
   visibleMetrics: DEFAULT_VISIBLE_METRICS,
-  sortBy: "views",
-  sortOrder: "desc",
+  rankingMetrics: ["views"],
+  resultOrder: "performance-desc",
   chartGrouping: "post",
   pageSize: 25,
   showMetricQuickControls: true,
@@ -250,6 +256,12 @@ const corePerformanceMetricKeys = new Set<CorePerformanceMetricKey>(
 const viewKeys = new Set<DashboardView>(["table", "bars", "lines"]);
 const groupingKeys = new Set<ChartGrouping>(["post", "day", "week", "month"]);
 const pageSizes = new Set([25, 50, 100]);
+const resultOrders = new Set<ResultOrder>([
+  "performance-desc",
+  "performance-asc",
+  "date-desc",
+  "date-asc",
+]);
 
 const requiredColumns = [
   "Post ID",
@@ -264,10 +276,11 @@ const requiredColumns = [
 
 type RawRow = Record<string, string | undefined>;
 
-function cloneDefaultPreferences(): DashboardPreferencesV3 {
+function cloneDefaultPreferences(): DashboardPreferencesV4 {
   return {
     ...DEFAULT_DASHBOARD_PREFERENCES,
     visibleMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics],
+    rankingMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics],
   };
 }
 
@@ -295,6 +308,16 @@ function validateVisibleMetrics(value: unknown): TableMetricKey[] | null {
     ),
   ];
   return visible.length ? visible : null;
+}
+
+function validateRankingMetrics(
+  value: unknown,
+): CorePerformanceMetricKey[] | null {
+  if (!Array.isArray(value)) return null;
+  const ranking = CORE_PERFORMANCE_METRICS.filter((key) =>
+    value.includes(key),
+  );
+  return ranking.length ? ranking : null;
 }
 
 function validateSorting(value: unknown): SortRule[] | null {
@@ -330,57 +353,97 @@ function validateSortOrder(value: unknown): SortOrder | null {
   return value === "desc" || value === "asc" ? value : null;
 }
 
-function ensureCoreMetricVisible(
-  visibleMetrics: TableMetricKey[],
-): TableMetricKey[] {
-  return visibleMetrics.some((key) =>
-    corePerformanceMetricKeys.has(key as CorePerformanceMetricKey),
-  )
-    ? visibleMetrics
-    : ["views", ...visibleMetrics];
+function validateResultOrder(value: unknown): ResultOrder | null {
+  return typeof value === "string" && resultOrders.has(value as ResultOrder)
+    ? (value as ResultOrder)
+    : null;
 }
 
-function ensureSortMetricVisible(
+function getLegacyRankingMetrics(
   visibleMetrics: TableMetricKey[],
   sortBy: SortBy,
-): TableMetricKey[] {
-  if (
-    sortBy === "publishedAt" ||
-    sortBy === "overallPerformance" ||
-    visibleMetrics.includes(sortBy)
-  ) {
-    return visibleMetrics;
+): CorePerformanceMetricKey[] {
+  if (corePerformanceMetricKeys.has(sortBy as CorePerformanceMetricKey)) {
+    return [sortBy as CorePerformanceMetricKey];
   }
-  return [...visibleMetrics, sortBy];
+  if (sortBy === "overallPerformance" || sortBy === "publishedAt") {
+    const visibleCoreMetrics = CORE_PERFORMANCE_METRICS.filter((key) =>
+      visibleMetrics.includes(key),
+    );
+    return visibleCoreMetrics.length ? visibleCoreMetrics : ["views"];
+  }
+  return ["views"];
+}
+
+function getLegacyResultOrder(
+  sortBy: SortBy,
+  sortOrder: SortOrder,
+): ResultOrder {
+  if (sortBy === "publishedAt") {
+    return sortOrder === "asc" ? "date-asc" : "date-desc";
+  }
+  return sortOrder === "asc" ? "performance-asc" : "performance-desc";
 }
 
 export function parseDashboardPreferences(
   storedValue: string | null,
   legacyVisibilityValue: string | null = null,
   legacyViewValue: string | null = null,
-): DashboardPreferencesV3 {
+): DashboardPreferencesV4 {
   const defaults = cloneDefaultPreferences();
   const stored = parseJson(storedValue);
 
-  if (isRecord(stored) && stored.version === 3) {
-    const sortBy = validateSortBy(stored.sortBy) ?? defaults.sortBy;
-    const visibleMetrics = ensureSortMetricVisible(
-      ensureCoreMetricVisible(
+  if (isRecord(stored) && stored.version === 4) {
+    return {
+      version: 4,
+      view:
+        typeof stored.view === "string" &&
+        viewKeys.has(stored.view as DashboardView)
+          ? (stored.view as DashboardView)
+          : defaults.view,
+      visibleMetrics:
         validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics,
-      ),
-      sortBy,
-    );
+      rankingMetrics:
+        validateRankingMetrics(stored.rankingMetrics) ??
+        defaults.rankingMetrics,
+      resultOrder:
+        validateResultOrder(stored.resultOrder) ?? defaults.resultOrder,
+      chartGrouping:
+        typeof stored.chartGrouping === "string" &&
+        groupingKeys.has(stored.chartGrouping as ChartGrouping)
+          ? (stored.chartGrouping as ChartGrouping)
+          : defaults.chartGrouping,
+      pageSize:
+        typeof stored.pageSize === "number" && pageSizes.has(stored.pageSize)
+          ? (stored.pageSize as 25 | 50 | 100)
+          : defaults.pageSize,
+      showMetricQuickControls:
+        typeof stored.showMetricQuickControls === "boolean"
+          ? stored.showMetricQuickControls
+          : defaults.showMetricQuickControls,
+      tableInternalScroll:
+        typeof stored.tableInternalScroll === "boolean"
+          ? stored.tableInternalScroll
+          : defaults.tableInternalScroll,
+    };
+  }
+
+  if (isRecord(stored) && stored.version === 3) {
+    const sortBy = validateSortBy(stored.sortBy) ?? "views";
+    const sortOrder = validateSortOrder(stored.sortOrder) ?? "desc";
+    const visibleMetrics =
+      validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 3,
+      version: 4,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
           ? (stored.view as DashboardView)
           : defaults.view,
       visibleMetrics,
-      sortBy,
-      sortOrder: validateSortOrder(stored.sortOrder) ?? defaults.sortOrder,
+      rankingMetrics: getLegacyRankingMetrics(visibleMetrics, sortBy),
+      resultOrder: getLegacyResultOrder(sortBy, sortOrder),
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -409,24 +472,22 @@ export function parseDashboardPreferences(
         ? (stored.analyzeMetric as TableMetricKey)
         : null;
     const sortBy =
-      legacySorting?.[0]?.id ?? legacyAnalyzeMetric ?? defaults.sortBy;
-    const visibleMetrics = ensureSortMetricVisible(
-      ensureCoreMetricVisible(
-        validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics,
-      ),
-      sortBy,
-    );
+      legacySorting?.[0]?.id ?? legacyAnalyzeMetric ?? "views";
+    const sortOrder: SortOrder =
+      legacySorting?.[0]?.desc === false ? "asc" : "desc";
+    const visibleMetrics =
+      validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 3,
+      version: 4,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
           ? (stored.view as DashboardView)
           : defaults.view,
       visibleMetrics,
-      sortBy,
-      sortOrder: legacySorting?.[0]?.desc === false ? "asc" : "desc",
+      rankingMetrics: getLegacyRankingMetrics(visibleMetrics, sortBy),
+      resultOrder: getLegacyResultOrder(sortBy, sortOrder),
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -462,9 +523,9 @@ export function parseDashboardPreferences(
 
   return {
     ...defaults,
-    visibleMetrics: ensureCoreMetricVisible(
-      legacyVisible?.length ? legacyVisible : defaults.visibleMetrics,
-    ),
+    visibleMetrics: legacyVisible?.length
+      ? legacyVisible
+      : defaults.visibleMetrics,
     view: legacyView ?? defaults.view,
   };
 }
@@ -802,6 +863,21 @@ export function calculateBalancedPerformanceScores<
       normalized.length;
     return Math.exp(meanLog) * 100;
   });
+}
+
+export function getResultSortRule(resultOrder: ResultOrder): SortRule[] {
+  if (resultOrder === "date-desc") {
+    return [{ id: "publishedAt", desc: true }];
+  }
+  if (resultOrder === "date-asc") {
+    return [{ id: "publishedAt", desc: false }];
+  }
+  return [
+    {
+      id: "overallPerformance",
+      desc: resultOrder === "performance-desc",
+    },
+  ];
 }
 
 export function sortPosts(

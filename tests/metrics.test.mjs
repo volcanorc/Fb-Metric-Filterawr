@@ -12,6 +12,7 @@ import {
   getChartDataSignature,
   getDisplayedRowNumber,
   getDateBounds,
+  getResultSortRule,
   isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
@@ -336,33 +337,36 @@ test("keeps every post in large ungrouped chart datasets", () => {
   assert.equal(buildChartData(posts, "post", []).length, 500);
 });
 
-test("validates V3 preferences and keeps the selected sort metric visible", () => {
+test("validates V4 preferences with independent ranking and visibility", () => {
   const preferences = parseDashboardPreferences(
     JSON.stringify({
-      version: 3,
+      version: 4,
       view: "lines",
-      visibleMetrics: ["views"],
-      sortBy: "comments",
-      sortOrder: "asc",
+      visibleMetrics: ["totalClicks"],
+      rankingMetrics: ["reach", "comments"],
+      resultOrder: "date-asc",
       chartGrouping: "month",
       pageSize: 50,
     }),
   );
 
   assert.equal(preferences.view, "lines");
-  assert.deepEqual(preferences.visibleMetrics, ["views", "comments"]);
-  assert.equal(preferences.sortBy, "comments");
-  assert.equal(preferences.sortOrder, "asc");
+  assert.deepEqual(preferences.visibleMetrics, ["totalClicks"]);
+  assert.deepEqual(preferences.rankingMetrics, ["reach", "comments"]);
+  assert.equal(preferences.resultOrder, "date-asc");
   assert.equal(preferences.chartGrouping, "month");
   assert.equal(preferences.pageSize, 50);
   assert.equal(preferences.showMetricQuickControls, true);
   assert.equal(preferences.tableInternalScroll, false);
 });
 
-test("uses Views as the fresh default without changing valid saved layouts", () => {
+test("uses Views and best performance as the fresh default", () => {
   assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics, ["views"]);
-  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.sortBy, "views");
-  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.sortOrder, "desc");
+  assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics, ["views"]);
+  assert.equal(
+    DEFAULT_DASHBOARD_PREFERENCES.resultOrder,
+    "performance-desc",
+  );
   assert.equal(
     DEFAULT_DASHBOARD_PREFERENCES.showMetricQuickControls,
     true,
@@ -383,11 +387,74 @@ test("uses Views as the fresh default without changing valid saved layouts", () 
     }),
   );
   assert.deepEqual(saved.visibleMetrics, ["reach", "comments"]);
-  assert.equal(saved.version, 3);
-  assert.equal(saved.sortBy, "reach");
-  assert.equal(saved.sortOrder, "asc");
+  assert.equal(saved.version, 4);
+  assert.deepEqual(saved.rankingMetrics, ["reach"]);
+  assert.equal(saved.resultOrder, "performance-asc");
   assert.equal(saved.showMetricQuickControls, false);
   assert.equal(saved.tableInternalScroll, true);
+});
+
+test("migrates V3 sort choices without coupling them to visible columns", () => {
+  const metricSort = parseDashboardPreferences(
+    JSON.stringify({
+      version: 3,
+      visibleMetrics: ["views"],
+      sortBy: "comments",
+      sortOrder: "asc",
+    }),
+  );
+  assert.deepEqual(metricSort.visibleMetrics, ["views"]);
+  assert.deepEqual(metricSort.rankingMetrics, ["comments"]);
+  assert.equal(metricSort.resultOrder, "performance-asc");
+
+  const balancedSort = parseDashboardPreferences(
+    JSON.stringify({
+      version: 3,
+      visibleMetrics: ["views", "reach", "totalClicks"],
+      sortBy: "overallPerformance",
+      sortOrder: "desc",
+    }),
+  );
+  assert.deepEqual(balancedSort.rankingMetrics, ["views", "reach"]);
+  assert.equal(balancedSort.resultOrder, "performance-desc");
+
+  const dateSort = parseDashboardPreferences(
+    JSON.stringify({
+      version: 3,
+      visibleMetrics: ["totalClicks"],
+      sortBy: "publishedAt",
+      sortOrder: "asc",
+    }),
+  );
+  assert.deepEqual(dateSort.visibleMetrics, ["totalClicks"]);
+  assert.deepEqual(dateSort.rankingMetrics, ["views"]);
+  assert.equal(dateSort.resultOrder, "date-asc");
+
+  const unsupportedSort = parseDashboardPreferences(
+    JSON.stringify({
+      version: 3,
+      visibleMetrics: ["shares"],
+      sortBy: "engagementRate",
+      sortOrder: "desc",
+    }),
+  );
+  assert.deepEqual(unsupportedSort.rankingMetrics, ["views"]);
+  assert.equal(unsupportedSort.resultOrder, "performance-desc");
+});
+
+test("maps the four result orders to balanced performance or post date", () => {
+  assert.deepEqual(getResultSortRule("performance-desc"), [
+    { id: "overallPerformance", desc: true },
+  ]);
+  assert.deepEqual(getResultSortRule("performance-asc"), [
+    { id: "overallPerformance", desc: false },
+  ]);
+  assert.deepEqual(getResultSortRule("date-desc"), [
+    { id: "publishedAt", desc: true },
+  ]);
+  assert.deepEqual(getResultSortRule("date-asc"), [
+    { id: "publishedAt", desc: false },
+  ]);
 });
 
 test("shows exact bar labels only for one or two visible metrics", () => {

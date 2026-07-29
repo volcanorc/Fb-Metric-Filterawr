@@ -550,12 +550,13 @@ summary:focus-visible {
 }
 
 .ranking-controls {
+  position: relative;
+  z-index: 8;
   display: grid;
   grid-template-columns:
     minmax(180px, 0.85fr)
-    minmax(360px, 1.8fr)
-    minmax(210px, 1fr)
-    minmax(230px, 1.1fr);
+    minmax(330px, 1.55fr)
+    minmax(220px, 1fr);
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background: #fbfcfd;
@@ -633,79 +634,113 @@ summary:focus-visible {
   box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
 }
 
-.core-metric-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+.ranking-metric-dropdown {
+  position: relative;
 }
 
-.core-metric-buttons button {
-  min-height: 31px;
-  display: inline-flex;
+.ranking-metric-trigger {
+  width: 100%;
+  height: 38px;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 9px;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: white;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 750;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
   transition:
     border-color 120ms ease,
-    background-color 120ms ease,
-    color 120ms ease;
+    box-shadow 120ms ease;
 }
 
-.core-metric-buttons button i {
+.ranking-metric-trigger:hover,
+.ranking-metric-trigger[aria-expanded="true"] {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 10%);
+}
+
+.ranking-metric-trigger svg {
+  flex: 0 0 auto;
+  color: var(--subtle);
+  transition: transform 140ms ease;
+}
+
+.ranking-metric-trigger svg.expanded {
+  transform: rotate(180deg);
+}
+
+.ranking-metric-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 16px 36px rgb(16 24 40 / 16%);
+}
+
+.ranking-metric-menu label {
+  min-width: 0;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ranking-metric-menu label:hover {
+  border-color: rgb(37 99 235 / 16%);
+  background: var(--surface-blue);
+  color: var(--blue-deep);
+}
+
+.ranking-metric-menu label:has(input:disabled) {
+  cursor: not-allowed;
+}
+
+.ranking-metric-menu input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.ranking-metric-menu label i {
   width: 7px;
   height: 7px;
-  flex: 0 0 7px;
   border-radius: 99px;
 }
 
-.core-metric-buttons button svg {
-  margin-left: 1px;
-}
-
-.core-metric-buttons button.active {
-  border-color: rgb(37 99 235 / 32%);
-  background: var(--blue-soft);
+.ranking-metric-menu label svg {
   color: var(--blue-deep);
 }
 
-.core-metric-buttons button:disabled {
-  cursor: not-allowed;
-  opacity: 0.72;
-}
-
-.order-toggle {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface-soft);
-}
-
-.order-toggle button {
-  min-width: 0;
-  min-height: 30px;
-  padding: 4px 7px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
+.ranking-metric-menu p {
+  grid-column: 1 / -1;
+  margin: 3px 2px 1px;
+  padding: 8px 7px 2px;
+  border-top: 1px solid var(--line);
+  color: var(--subtle);
   font-size: 9px;
-  font-weight: 750;
-  line-height: 1.2;
-}
-
-.order-toggle button.active {
-  background: white;
-  color: var(--blue-deep);
-  box-shadow: 0 1px 3px rgb(16 24 40 / 12%);
+  line-height: 1.4;
 }
 
 .balanced-ranking-note {
@@ -720,6 +755,13 @@ summary:focus-visible {
 
 .balanced-ranking-note svg {
   flex: 0 0 auto;
+}
+
+.order-result-note {
+  margin: 7px 1px 0;
+  color: var(--subtle);
+  font-size: 9px;
+  line-height: 1.3;
 }
 
 .control-bar {
@@ -1270,35 +1312,36 @@ tbody tr:hover td.sticky-column {
   background: #fbfcff;
 }
 
-.sort-header {
-  display: inline-flex;
+th.ranking-column {
+  background: #eef4ff;
+  box-shadow: inset 0 -2px 0 rgb(37 99 235 / 38%);
+}
+
+.metric-column-heading {
+  min-width: 0;
+  display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  text-transform: inherit;
 }
 
-.sort-header:hover {
+.metric-column-heading.is-ranking {
   color: var(--blue-deep);
 }
 
-.sort-header svg {
-  opacity: 0.55;
-}
-
-th[aria-sort="ascending"] .sort-header,
-th[aria-sort="descending"] .sort-header {
+.ranking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid rgb(37 99 235 / 18%);
+  border-radius: 99px;
+  background: white;
   color: var(--blue-deep);
-}
-
-th[aria-sort="ascending"] .sort-header svg,
-th[aria-sort="descending"] .sort-header svg {
-  opacity: 1;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: none;
 }
 
 .post-cell {
@@ -2179,15 +2222,10 @@ td time {
   }
 
   .ranking-controls {
-    grid-template-columns: minmax(220px, 0.85fr) minmax(400px, 1.5fr);
-  }
-
-  .ranking-control-card:nth-child(2n) {
-    border-right: 0;
-  }
-
-  .ranking-control-card:nth-child(-n + 2) {
-    border-bottom: 1px solid var(--line);
+    grid-template-columns:
+      minmax(170px, 0.8fr)
+      minmax(300px, 1.45fr)
+      minmax(205px, 1fr);
   }
 
   .reset-button {
@@ -2441,6 +2479,25 @@ td time {
     font-weight: 700;
   }
 
+  .mobile-metrics > div > span.mobile-ranking-label {
+    color: var(--blue-deep);
+  }
+
+  .mobile-ranking-label em {
+    width: fit-content;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-top: 3px;
+    padding: 2px 4px;
+    border-radius: 99px;
+    background: var(--surface-blue);
+    font-size: 7px;
+    font-style: normal;
+    font-weight: 800;
+    line-height: 1;
+  }
+
   .chart-panel {
     padding-inline: 16px;
   }
@@ -2515,9 +2572,8 @@ td time {
     padding-inline: 15px;
   }
 
-  .core-metric-buttons button {
-    flex: 1 1 calc(50% - 4px);
-    justify-content: center;
+  .ranking-metric-menu {
+    grid-template-columns: 1fr;
   }
 
   .workspace-card > .metric-quick-controls {

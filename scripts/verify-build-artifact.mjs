@@ -5,6 +5,7 @@ import process from "node:process";
 const root = process.cwd();
 const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
+const rankingMarker = "postpulse-independent-ranking-v1";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -71,12 +72,23 @@ async function anyFileContains(files, text) {
   return false;
 }
 
-const [clientHasMarker, serverHasMarker, cssHasLabelClass, cssHasVisibilityRule] =
+const [
+  clientHasMarker,
+  serverHasMarker,
+  clientHasRankingMarker,
+  serverHasRankingMarker,
+  cssHasLabelClass,
+  cssHasVisibilityRule,
+  cssHasRankingControls,
+] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
     anyFileContains(serverJavaScript, buildMarker),
+    anyFileContains(clientJavaScript, rankingMarker),
+    anyFileContains(serverJavaScript, rankingMarker),
     anyFileContains(cssFiles, "chart-bar-value-label"),
     anyFileContains(cssFiles, "data-bar-labels-visible"),
+    anyFileContains(cssFiles, "ranking-metric-menu"),
   ]);
 
 if (!clientHasMarker) {
@@ -85,12 +97,18 @@ if (!clientHasMarker) {
 if (!serverHasMarker) {
   fail("the server bundle is missing the final bar-remount behavior.");
 }
+if (!clientHasRankingMarker || !serverHasRankingMarker) {
+  fail("the compiled bundle is missing independent multi-metric ranking.");
+}
 if (!cssHasLabelClass || !cssHasVisibilityRule) {
   fail("the compiled CSS is missing the settled bar-label visibility rules.");
+}
+if (!cssHasRankingControls) {
+  fail("the compiled CSS is missing the ranking dropdown treatment.");
 }
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with bar-label remount and visibility behavior.",
+  "Build artifact verified: fresh dist with independent ranking and final bar-label behavior.",
 );

@@ -14,7 +14,6 @@ import {
 import {
   type ColumnDef,
   type PaginationState,
-  type SortingState,
   type VisibilityState,
   flexRender,
   getCoreRowModel,
@@ -76,21 +75,20 @@ import {
   type ChartMetricTransitionState,
   type CorePerformanceMetricKey,
   type CsvParseResult,
-  type DashboardPreferencesV3,
+  type DashboardPreferencesV4,
   type DashboardView,
   type DatePreset,
   type FilterState,
   type NumericRange,
   type PostMetric,
-  type SortBy,
-  type SortOrder,
-  type SortRule,
+  type ResultOrder,
   type TableMetricKey,
   CORE_PERFORMANCE_METRICS,
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   DEFAULT_VISIBLE_METRICS,
   LEGACY_PREFERENCES_STORAGE_KEY,
+  LEGACY_V2_PREFERENCES_STORAGE_KEY,
   LEGACY_VIEW_KEY,
   LEGACY_VISIBILITY_KEY,
   PREFERENCES_STORAGE_KEY,
@@ -107,6 +105,7 @@ import {
   getChartDataSignature,
   getDisplayedRowNumber,
   getPostHeadline,
+  getResultSortRule,
   isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
@@ -153,10 +152,6 @@ function visibilityFromMetrics(metrics: TableMetricKey[]): VisibilityState {
   return Object.fromEntries(
     tableMetricDefinitions.map(({ key }) => [key, metrics.includes(key)]),
   );
-}
-
-function toSortRule(sortBy: SortBy, sortOrder: SortOrder): SortRule[] {
-  return [{ id: sortBy, desc: sortOrder === "desc" }];
 }
 
 function openPost(url: string) {
@@ -357,9 +352,6 @@ function MetricQuickControls({
   onToggle: (key: TableMetricKey, checked: boolean) => void;
   onHighlight?: (key: TableMetricKey | null) => void;
 }) {
-  const visibleCoreCount = CORE_PERFORMANCE_METRICS.filter((key) =>
-    visibleMetrics.includes(key),
-  ).length;
   const displayedMetrics = tableMetricDefinitions.filter(
     ({ key }) => CORE_METRIC_SET.has(key) || visibleMetrics.includes(key),
   );
@@ -371,17 +363,14 @@ function MetricQuickControls({
     >
       {displayedMetrics.map((metric) => {
         const active = visibleMetrics.includes(metric.key);
-        const lastCore =
-          active &&
-          CORE_METRIC_SET.has(metric.key) &&
-          visibleCoreCount === 1;
+        const lastVisible = active && visibleMetrics.length === 1;
         return (
           <button
             type="button"
             key={metric.key}
             className={active ? "active" : ""}
             aria-pressed={active}
-            disabled={lastCore}
+            disabled={lastVisible}
             onClick={() => {
               onHighlight?.(null);
               onToggle(metric.key, !active);
@@ -391,8 +380,8 @@ function MetricQuickControls({
             onFocus={() => active && onHighlight?.(metric.key)}
             onBlur={() => onHighlight?.(null)}
             title={
-              lastCore
-                ? "At least one performance metric must remain visible"
+              lastVisible
+                ? "At least one metric must remain visible"
                 : `${active ? "Hide" : "Show"} ${metric.label}`
             }
           >
@@ -938,13 +927,17 @@ export default function Home() {
   const [dataset, setDataset] = useState<CsvParseResult>(EMPTY_DATASET);
   const [fileName, setFileName] = useState("");
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
-  const [sortBy, setSortBy] = useState<SortBy>("views");
-  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [rankingMetrics, setRankingMetrics] = useState<
+    CorePerformanceMetricKey[]
+  >(["views"]);
+  const [resultOrder, setResultOrder] =
+    useState<ResultOrder>("performance-desc");
   const [view, setView] = useState<DashboardView>("table");
   const [chartGrouping, setChartGrouping] =
     useState<ChartGrouping>("post");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [rangesOpen, setRangesOpen] = useState(false);
+  const [rankingMenuOpen, setRankingMenuOpen] = useState(false);
   const [showMetricQuickControls, setShowMetricQuickControls] =
     useState(true);
   const [tableInternalScroll, setTableInternalScroll] = useState(false);
@@ -960,12 +953,15 @@ export default function Home() {
   const [copiedPostId, setCopiedPostId] = useState("");
   const [expandedPosts, setExpandedPosts] = useState<Set<string>>(new Set());
   const [chooserDatum, setChooserDatum] = useState<ChartDatum | null>(null);
+  const rankingMenuRef = useRef<HTMLDivElement | null>(null);
+  const rankingMenuButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     try {
       const preferences = parseDashboardPreferences(
         window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ??
-          window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY),
+          window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_V2_PREFERENCES_STORAGE_KEY),
         window.localStorage.getItem(LEGACY_VISIBILITY_KEY),
         window.localStorage.getItem(LEGACY_VIEW_KEY),
       );
@@ -973,8 +969,8 @@ export default function Home() {
       setColumnVisibility(
         visibilityFromMetrics(preferences.visibleMetrics),
       );
-      setSortBy(preferences.sortBy);
-      setSortOrder(preferences.sortOrder);
+      setRankingMetrics(preferences.rankingMetrics);
+      setResultOrder(preferences.resultOrder);
       setChartGrouping(preferences.chartGrouping);
       setShowMetricQuickControls(preferences.showMetricQuickControls);
       setTableInternalScroll(preferences.tableInternalScroll);
@@ -993,22 +989,14 @@ export default function Home() {
         .map(({ key }) => key),
     [columnVisibility],
   );
-  const selectedCoreMetricKeys = useMemo(
-    () =>
-      CORE_PERFORMANCE_METRICS.filter((key) =>
-        visibleMetricKeys.includes(key),
-      ),
-    [visibleMetricKeys],
-  );
-
   useEffect(() => {
     if (!preferencesReady) return;
-    const preferences: DashboardPreferencesV3 = {
-      version: 3,
+    const preferences: DashboardPreferencesV4 = {
+      version: 4,
       view,
       visibleMetrics: visibleMetricKeys,
-      sortBy,
-      sortOrder,
+      rankingMetrics,
+      resultOrder,
       chartGrouping,
       pageSize: pagination.pageSize as 25 | 50 | 100,
       showMetricQuickControls,
@@ -1020,6 +1008,7 @@ export default function Home() {
         JSON.stringify(preferences),
       );
       window.localStorage.removeItem(LEGACY_PREFERENCES_STORAGE_KEY);
+      window.localStorage.removeItem(LEGACY_V2_PREFERENCES_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_VISIBILITY_KEY);
       window.localStorage.removeItem(LEGACY_VIEW_KEY);
     } catch {
@@ -1029,8 +1018,8 @@ export default function Home() {
     chartGrouping,
     pagination.pageSize,
     preferencesReady,
-    sortBy,
-    sortOrder,
+    rankingMetrics,
+    resultOrder,
     showMetricQuickControls,
     tableInternalScroll,
     view,
@@ -1046,6 +1035,29 @@ export default function Home() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [chooserDatum]);
 
+  useEffect(() => {
+    if (!rankingMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (
+        rankingMenuRef.current &&
+        !rankingMenuRef.current.contains(event.target as Node)
+      ) {
+        setRankingMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setRankingMenuOpen(false);
+      rankingMenuButtonRef.current?.focus();
+    };
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [rankingMenuOpen]);
+
   const posts = dataset.posts;
   const hasDataset = posts.length > 0;
   const filteredPosts = useMemo(
@@ -1053,12 +1065,12 @@ export default function Home() {
     [posts, filters],
   );
   const activeSorting = useMemo(
-    () => toSortRule(sortBy, sortOrder),
-    [sortBy, sortOrder],
+    () => getResultSortRule(resultOrder),
+    [resultOrder],
   );
   const sortedPosts = useMemo(
-    () => sortPosts(filteredPosts, activeSorting, selectedCoreMetricKeys),
-    [activeSorting, filteredPosts, selectedCoreMetricKeys],
+    () => sortPosts(filteredPosts, activeSorting, rankingMetrics),
+    [activeSorting, filteredPosts, rankingMetrics],
   );
   const totals = useMemo(() => calculateTotals(filteredPosts), [filteredPosts]);
   const chartData = useMemo(
@@ -1067,9 +1079,9 @@ export default function Home() {
         filteredPosts,
         chartGrouping,
         activeSorting,
-        selectedCoreMetricKeys,
+        rankingMetrics,
       ),
-    [activeSorting, chartGrouping, filteredPosts, selectedCoreMetricKeys],
+    [activeSorting, chartGrouping, filteredPosts, rankingMetrics],
   );
   const pages = useMemo(
     () => [...new Set(posts.map((post) => post.pageName))].sort(),
@@ -1162,16 +1174,8 @@ export default function Home() {
       {
         id: "publishedAt",
         accessorKey: "publishedAt",
-        sortDescFirst: true,
-        header: ({ column }) => (
-          <button
-            className="sort-header"
-            onClick={column.getToggleSortingHandler()}
-            aria-label="Sort by publish date"
-          >
-            Publish date <ArrowDownUp size={13} />
-          </button>
-        ),
+        enableSorting: false,
+        header: "Publish date",
         cell: ({ getValue }) => (
           <time dateTime={new Date(getValue<number>()).toISOString()}>
             {formatDate(getValue<number>())}
@@ -1184,18 +1188,29 @@ export default function Home() {
       ({ key, label }) => ({
         id: key,
         accessorFn: (post) => getMetricValue(post, key),
-        sortUndefined: "last",
-        sortDescFirst: true,
-        header: ({ column }) => {
-          const toggleSorting = column.getToggleSortingHandler();
+        enableSorting: false,
+        header: () => {
+          const isRankingMetric = rankingMetrics.includes(
+            key as CorePerformanceMetricKey,
+          );
           return (
-            <button
-              className="sort-header"
-              onClick={(event) => toggleSorting?.(event)}
-              aria-label={`Sort by ${label}`}
+            <div
+              className={`metric-column-heading ${
+                isRankingMetric ? "is-ranking" : ""
+              }`}
+              title={
+                isRankingMetric
+                  ? `${label} contributes to balanced ranking`
+                  : undefined
+              }
             >
-              {label} <ArrowDownUp size={13} />
-            </button>
+              <span>{label}</span>
+              {isRankingMetric ? (
+                <span className="ranking-indicator">
+                  <Sparkles size={10} /> Ranking
+                </span>
+              ) : null}
+            </div>
           );
         },
         cell: ({ getValue }) => (
@@ -1210,32 +1225,17 @@ export default function Home() {
       }),
     );
     return [...base, ...metricColumns];
-  }, [copiedPostId, copyPostTitle, extremes]);
-
-  const sortingState = useMemo<SortingState>(
-    () => [{ id: sortBy, desc: sortOrder === "desc" }],
-    [sortBy, sortOrder],
-  );
+  }, [copiedPostId, copyPostTitle, extremes, rankingMetrics]);
 
   const table = useReactTable({
     data: sortedPosts,
     columns,
-    state: { sorting: sortingState, columnVisibility, pagination },
-    onSortingChange: (updater) => {
-      const next =
-        typeof updater === "function" ? updater(sortingState) : updater;
-      const [rule] = next;
-      if (!rule) return;
-      setSortBy(rule.id as SortBy);
-      setSortOrder(rule.desc ? "desc" : "asc");
-    },
+    state: { columnVisibility, pagination },
     onColumnVisibilityChange: setColumnVisibility,
     onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
-    manualSorting: true,
-    enableMultiSort: false,
-    enableSortingRemoval: false,
+    enableSorting: false,
   });
 
   useEffect(() => {
@@ -1294,42 +1294,23 @@ export default function Home() {
 
   function toggleMetricVisibility(key: TableMetricKey, checked: boolean) {
     const currentlyVisible = visibleMetricKeys.includes(key);
-    const isCoreMetric = CORE_METRIC_SET.has(key);
-    if (
-      !checked &&
-      currentlyVisible &&
-      isCoreMetric &&
-      selectedCoreMetricKeys.length === 1
-    ) {
-      return;
-    }
-
-    if (!checked && sortBy === key) {
-      const remainingCore = selectedCoreMetricKeys.filter(
-        (metric) => metric !== key,
-      );
-      setSortBy(
-        remainingCore.length > 1
-          ? "overallPerformance"
-          : (remainingCore[0] ?? "views"),
-      );
-    }
+    if (!checked && currentlyVisible && visibleMetricKeys.length === 1) return;
 
     setColumnVisibility((current) => ({ ...current, [key]: checked }));
   }
 
-  function selectSortField(nextSortBy: SortBy) {
-    setSortBy(nextSortBy);
-    setSortOrder("desc");
-    if (
-      nextSortBy !== "publishedAt" &&
-      nextSortBy !== "overallPerformance"
-    ) {
-      setColumnVisibility((current) => ({
-        ...current,
-        [nextSortBy]: true,
-      }));
-    }
+  function toggleRankingMetric(
+    key: CorePerformanceMetricKey,
+    checked: boolean,
+  ) {
+    setRankingMetrics((current) => {
+      if (!checked && current.includes(key) && current.length === 1) {
+        return current;
+      }
+      return CORE_PERFORMANCE_METRICS.filter((metric) =>
+        metric === key ? checked : current.includes(metric),
+      );
+    });
   }
 
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -1375,9 +1356,8 @@ export default function Home() {
 
   function resetFilters() {
     setFilters(defaultFilters);
-    setSortBy("views");
-    setSortOrder("desc");
-    setColumnVisibility((current) => ({ ...current, views: true }));
+    setRankingMetrics(["views"]);
+    setResultOrder("performance-desc");
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }
 
@@ -1390,8 +1370,6 @@ export default function Home() {
     const defaults = DEFAULT_DASHBOARD_PREFERENCES;
     setView(defaults.view);
     setColumnVisibility(visibilityFromMetrics(defaults.visibleMetrics));
-    setSortBy(defaults.sortBy);
-    setSortOrder(defaults.sortOrder);
     setChartGrouping(defaults.chartGrouping);
     setShowMetricQuickControls(defaults.showMetricQuickControls);
     setTableInternalScroll(defaults.tableInternalScroll);
@@ -1419,13 +1397,14 @@ export default function Home() {
     filters.customStart,
     filters.customEnd,
   );
-  const additionalSortMetrics = tableMetricDefinitions.filter(
-    ({ key }) => !CORE_METRIC_SET.has(key) && visibleMetricKeys.includes(key),
-  );
-  const chooserMetricDefinition =
-    sortBy !== "publishedAt" && sortBy !== "overallPerformance"
-      ? tableMetricDefinitions.find(({ key }) => key === sortBy)
-      : null;
+  const rankingMetricsSummary =
+    rankingMetrics.length <= 2
+      ? coreMetricDefinitions
+          .filter(({ key }) => rankingMetrics.includes(key))
+          .map(({ label }) => label)
+          .join(" + ")
+      : `${rankingMetrics.length} metrics selected`;
+  const performanceOrdering = resultOrder.startsWith("performance");
 
   return (
     <>
@@ -1535,7 +1514,11 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="ranking-controls" aria-label="Ranking controls">
+          <div
+            className="ranking-controls"
+            aria-label="Ranking controls"
+            data-ranking-model="postpulse-independent-ranking-v1"
+          >
             <section className="ranking-control-card">
               <div className="ranking-control-heading">
                 <span>1</span>
@@ -1562,132 +1545,100 @@ export default function Home() {
               </select>
             </section>
 
-            <section className="ranking-control-card metrics-display-card">
+            <section className="ranking-control-card ranking-metrics-card">
               <div className="ranking-control-heading">
                 <span>2</span>
                 <div>
-                  <strong>Metrics to display</strong>
-                  <small>Select one or more performance signals</small>
+                  <strong>Ranking metrics</strong>
+                  <small>Choose the signals that determine post rank</small>
                 </div>
               </div>
-              <div
-                className="core-metric-buttons"
-                role="group"
-                aria-label="Metrics to display"
-              >
-                {coreMetricDefinitions.map(({ key, label, chartColor }) => {
-                  const active = selectedCoreMetricKeys.includes(key);
-                  const lastCore =
-                    active && selectedCoreMetricKeys.length === 1;
-                  return (
-                    <button
-                      type="button"
-                      key={key}
-                      className={active ? "active" : ""}
-                      aria-pressed={active}
-                      disabled={lastCore}
-                      title={
-                        lastCore
-                          ? "At least one performance metric must remain selected"
-                          : `${active ? "Hide" : "Show"} ${label}`
-                      }
-                      onClick={() => toggleMetricVisibility(key, !active)}
-                    >
-                      <i style={{ backgroundColor: chartColor }} />
-                      {label}
-                      {active ? <Check size={12} /> : null}
-                    </button>
-                  );
-                })}
+              <div className="ranking-metric-dropdown" ref={rankingMenuRef}>
+                <button
+                  ref={rankingMenuButtonRef}
+                  type="button"
+                  className="ranking-metric-trigger"
+                  aria-expanded={rankingMenuOpen}
+                  aria-controls="ranking-metric-options"
+                  onClick={() => setRankingMenuOpen((open) => !open)}
+                >
+                  <span>{rankingMetricsSummary}</span>
+                  <ChevronDown
+                    size={15}
+                    className={rankingMenuOpen ? "expanded" : ""}
+                  />
+                </button>
+                {rankingMenuOpen ? (
+                  <div
+                    className="ranking-metric-menu"
+                    id="ranking-metric-options"
+                    role="group"
+                    aria-label="Metrics used to rank posts"
+                  >
+                    {coreMetricDefinitions.map(
+                      ({ key, label, chartColor }) => {
+                        const checked = rankingMetrics.includes(key);
+                        const lastRankingMetric =
+                          checked && rankingMetrics.length === 1;
+                        return (
+                          <label key={key}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={lastRankingMetric}
+                              onChange={(event) =>
+                                toggleRankingMetric(
+                                  key,
+                                  event.target.checked,
+                                )
+                              }
+                            />
+                            <i style={{ backgroundColor: chartColor }} />
+                            <span>{label}</span>
+                            {checked ? <Check size={13} /> : null}
+                          </label>
+                        );
+                      },
+                    )}
+                    <p>
+                      Posts that perform consistently across all selected
+                      metrics rank higher.
+                    </p>
+                  </div>
+                ) : null}
               </div>
+              <p className="balanced-ranking-note">
+                <Sparkles size={12} />
+                Balancing {rankingMetrics.length}{" "}
+                {rankingMetrics.length === 1 ? "metric" : "metrics"} equally.
+              </p>
             </section>
 
             <section className="ranking-control-card">
               <div className="ranking-control-heading">
                 <span>3</span>
                 <div>
-                  <strong>Sort by</strong>
-                  <small>Choose the primary ranking signal</small>
+                  <strong>Order results</strong>
+                  <small>Rank by performance or publish date</small>
                 </div>
               </div>
               <select
-                value={sortBy}
+                value={resultOrder}
                 onChange={(event) =>
-                  selectSortField(event.target.value as SortBy)
+                  setResultOrder(event.target.value as ResultOrder)
                 }
-                aria-label="Sort posts by"
+                aria-label="Order results"
               >
-                <option value="overallPerformance">
-                  Overall performance
-                </option>
-                <optgroup label="Core metrics">
-                  {coreMetricDefinitions.map(({ key, label }) => (
-                    <option key={key} value={key}>
-                      {label}
-                    </option>
-                  ))}
-                </optgroup>
-                <option value="publishedAt">Post date</option>
-                {additionalSortMetrics.length ? (
-                  <optgroup label="Additional visible metrics">
-                    {additionalSortMetrics.map(({ key, label }) => (
-                      <option key={key} value={key}>
-                        {label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ) : null}
+                <option value="performance-desc">Best performance</option>
+                <option value="performance-asc">Lowest performance</option>
+                <option value="date-desc">Newest posts</option>
+                <option value="date-asc">Oldest posts</option>
               </select>
-              {sortBy === "overallPerformance" ? (
-                <p className="balanced-ranking-note">
-                  <Sparkles size={12} />
-                  Balances {selectedCoreMetricKeys.length} selected{" "}
-                  {selectedCoreMetricKeys.length === 1
-                    ? "metric"
-                    : "metrics"}{" "}
-                  equally.
-                </p>
-              ) : null}
-            </section>
-
-            <section className="ranking-control-card">
-              <div className="ranking-control-heading">
-                <span>4</span>
-                <div>
-                  <strong>Order</strong>
-                  <small>
-                    {sortBy === "publishedAt"
-                      ? "Arrange posts by publish date"
-                      : "Arrange posts by performance"}
-                  </small>
-                </div>
-              </div>
-              <div
-                className="order-toggle"
-                role="group"
-                aria-label="Sort order"
-              >
-                <button
-                  type="button"
-                  className={sortOrder === "desc" ? "active" : ""}
-                  aria-pressed={sortOrder === "desc"}
-                  onClick={() => setSortOrder("desc")}
-                >
-                  {sortBy === "publishedAt"
-                    ? "Newest to oldest"
-                    : "Highest to lowest"}
-                </button>
-                <button
-                  type="button"
-                  className={sortOrder === "asc" ? "active" : ""}
-                  aria-pressed={sortOrder === "asc"}
-                  onClick={() => setSortOrder("asc")}
-                >
-                  {sortBy === "publishedAt"
-                    ? "Oldest to newest"
-                    : "Lowest to highest"}
-                </button>
-              </div>
+              <p className="order-result-note">
+                {performanceOrdering
+                  ? `Uses ${rankingMetricsSummary} for balanced ranking.`
+                  : "Ranking metrics stay selected for when you return to performance."}
+              </p>
             </section>
           </div>
 
@@ -1846,7 +1797,8 @@ export default function Home() {
                   </button>
                 </div>
                 <p className="preference-note">
-                  Shared by the table and both charts. Saved on this device.
+                  Controls columns and chart series only. Ranking metrics stay
+                  independent. Saved on this device.
                 </p>
                 <label className="quick-controls-setting">
                   <input
@@ -1886,11 +1838,7 @@ export default function Home() {
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={
-                            checked &&
-                            CORE_METRIC_SET.has(key) &&
-                            selectedCoreMetricKeys.length === 1
-                          }
+                          disabled={checked && visibleMetricKeys.length === 1}
                           onChange={(event) =>
                             toggleMetricVisibility(key, event.target.checked)
                           }
@@ -2023,16 +1971,16 @@ export default function Home() {
                           {headerGroup.headers.map((header) => (
                             <th
                               key={header.id}
-                              className={
-                                header.id === "post" ? "sticky-column" : ""
-                              }
-                              aria-sort={
-                                header.column.getIsSorted() === "asc"
-                                  ? "ascending"
-                                  : header.column.getIsSorted() === "desc"
-                                    ? "descending"
-                                    : "none"
-                              }
+                              className={[
+                                header.id === "post" ? "sticky-column" : "",
+                                rankingMetrics.includes(
+                                  header.id as CorePerformanceMetricKey,
+                                )
+                                  ? "ranking-column"
+                                  : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" ")}
                             >
                               {header.isPlaceholder
                                 ? null
@@ -2129,7 +2077,24 @@ export default function Home() {
                               )
                               .map(({ key, label }) => (
                                 <div key={key}>
-                                  <span>{label}</span>
+                                  <span
+                                    className={
+                                      rankingMetrics.includes(
+                                        key as CorePerformanceMetricKey,
+                                      )
+                                        ? "mobile-ranking-label"
+                                        : ""
+                                    }
+                                  >
+                                    {label}
+                                    {rankingMetrics.includes(
+                                      key as CorePerformanceMetricKey,
+                                    ) ? (
+                                      <em>
+                                        <Sparkles size={9} /> Ranking
+                                      </em>
+                                    ) : null}
+                                  </span>
                                   <MetricBar
                                     value={getMetricValue(post, key)}
                                     min={extremes[key].min}
@@ -2365,33 +2330,22 @@ export default function Home() {
                       <small>{post.pageName}</small>
                     </div>
                     <b>
-                      {sortBy === "overallPerformance" ? (
+                      {performanceOrdering ? (
                         <>
                           Balanced across
                           <em>
                             {coreMetricDefinitions
                               .filter(({ key }) =>
-                                selectedCoreMetricKeys.includes(key),
+                                rankingMetrics.includes(key),
                               )
                               .map(({ compactLabel }) => compactLabel)
                               .join(" + ")}
                           </em>
                         </>
-                      ) : sortBy === "publishedAt" ? (
+                      ) : (
                         <>
                           Published
                           <em>{formatDate(post.publishedAt)}</em>
-                        </>
-                      ) : (
-                        <>
-                          {chooserMetricDefinition?.label ?? "Metric"}
-                          <em>
-                            {sortBy === "engagementRate"
-                              ? formatPercent(post.engagementRate)
-                              : formatCount(
-                                  Number(getMetricValue(post, sortBy) ?? 0),
-                                )}
-                          </em>
                         </>
                       )}
                     </b>
