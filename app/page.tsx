@@ -78,6 +78,7 @@ import {
   type DashboardPreferencesV4,
   type DashboardView,
   type DatePreset,
+  type DuplicateTitleMode,
   type FilterState,
   type NumericRange,
   type PostMetric,
@@ -92,6 +93,7 @@ import {
   LEGACY_VIEW_KEY,
   LEGACY_VISIBILITY_KEY,
   PREFERENCES_STORAGE_KEY,
+  applyDuplicateTitleMode,
   buildChartData,
   calculateTotals,
   completeChartMetricExit,
@@ -913,7 +915,11 @@ function ChartPanel({
 function getStatusText(result: CsvParseResult) {
   const notices = [
     result.skippedRows ? `${result.skippedRows} skipped` : "",
-    result.duplicateRows ? `${result.duplicateRows} duplicate` : "",
+    result.duplicateRows
+      ? `${result.duplicateRows} duplicate post ID ${
+          result.duplicateRows === 1 ? "row" : "rows"
+        } skipped`
+      : "",
     result.mismatchRows ? `${result.mismatchRows} recalculated engagement` : "",
     result.invalidNumericCells
       ? `${result.invalidNumericCells} invalid numbers set to 0`
@@ -932,6 +938,8 @@ export default function Home() {
   >(["views"]);
   const [resultOrder, setResultOrder] =
     useState<ResultOrder>("performance-desc");
+  const [duplicateTitleMode, setDuplicateTitleMode] =
+    useState<DuplicateTitleMode>("include");
   const [view, setView] = useState<DashboardView>("table");
   const [chartGrouping, setChartGrouping] =
     useState<ChartGrouping>("post");
@@ -1060,7 +1068,7 @@ export default function Home() {
 
   const posts = dataset.posts;
   const hasDataset = posts.length > 0;
-  const filteredPosts = useMemo(
+  const baseFilteredPosts = useMemo(
     () => filterPosts(posts, filters),
     [posts, filters],
   );
@@ -1068,6 +1076,22 @@ export default function Home() {
     () => getResultSortRule(resultOrder),
     [resultOrder],
   );
+  const duplicateTitleResult = useMemo(
+    () =>
+      applyDuplicateTitleMode(
+        baseFilteredPosts,
+        duplicateTitleMode,
+        activeSorting,
+        rankingMetrics,
+      ),
+    [
+      activeSorting,
+      baseFilteredPosts,
+      duplicateTitleMode,
+      rankingMetrics,
+    ],
+  );
+  const filteredPosts = duplicateTitleResult.posts;
   const sortedPosts = useMemo(
     () => sortPosts(filteredPosts, activeSorting, rankingMetrics),
     [activeSorting, filteredPosts, rankingMetrics],
@@ -1240,7 +1264,7 @@ export default function Home() {
 
   useEffect(() => {
     table.setPageIndex(0);
-  }, [fileName, filters, table]);
+  }, [duplicateTitleMode, fileName, filters, table]);
 
   const activeRangeCount = Object.values(filters.ranges).filter(
     (range) => range?.min !== undefined || range?.max !== undefined,
@@ -1250,7 +1274,8 @@ export default function Home() {
     Number(Boolean(filters.search)) +
     Number(filters.datePreset !== DEFAULT_DATE_PRESET) +
     Number(Boolean(filters.pageName)) +
-    Number(Boolean(filters.postType));
+    Number(Boolean(filters.postType)) +
+    Number(duplicateTitleMode === "exclude");
 
   const kpis: Array<{
     icon: Icon;
@@ -1322,6 +1347,7 @@ export default function Home() {
       setDataset(nextDataset);
       setFileName(file.name);
       setFilters(defaultFilters);
+      setDuplicateTitleMode("include");
       setPagination((current) => ({ ...current, pageIndex: 0 }));
     } catch (error) {
       setUploadError(
@@ -1356,6 +1382,7 @@ export default function Home() {
 
   function resetFilters() {
     setFilters(defaultFilters);
+    setDuplicateTitleMode("include");
     setRankingMetrics(["views"]);
     setResultOrder("performance-desc");
     setPagination((current) => ({ ...current, pageIndex: 0 }));
@@ -1925,11 +1952,56 @@ export default function Home() {
             </section>
           ) : null}
 
-          <div className="results-meta">
-            <span>
-              <strong>{formatCount(filteredPosts.length)}</strong>{" "}
-              {filteredPosts.length === 1 ? "post" : "posts"} matched
-            </span>
+          <div
+            className="results-meta"
+            data-duplicate-filter="postpulse-title-dedupe-v1"
+          >
+            <div className="results-summary">
+              <div className="duplicate-title-filter">
+                <span>Duplicate titles</span>
+                <div
+                  className="duplicate-title-toggle"
+                  role="group"
+                  aria-label="Include or exclude posts with duplicate titles"
+                >
+                  <button
+                    type="button"
+                    className={
+                      duplicateTitleMode === "include" ? "active" : ""
+                    }
+                    aria-pressed={duplicateTitleMode === "include"}
+                    onClick={() => setDuplicateTitleMode("include")}
+                  >
+                    Include
+                  </button>
+                  <button
+                    type="button"
+                    className={
+                      duplicateTitleMode === "exclude" ? "active" : ""
+                    }
+                    aria-pressed={duplicateTitleMode === "exclude"}
+                    onClick={() => setDuplicateTitleMode("exclude")}
+                  >
+                    Exclude
+                  </button>
+                </div>
+              </div>
+              <span className="matched-post-count">
+                <strong>{formatCount(filteredPosts.length)}</strong>{" "}
+                {filteredPosts.length === 1 ? "post" : "posts"} matched
+              </span>
+              {duplicateTitleMode === "exclude" ? (
+                <span className="duplicate-title-feedback" role="status">
+                  {duplicateTitleResult.hiddenCount
+                    ? `${formatCount(duplicateTitleResult.hiddenCount)} ${
+                        duplicateTitleResult.hiddenCount === 1
+                          ? "duplicate post"
+                          : "duplicate posts"
+                      } hidden`
+                    : "No duplicate titles found"}
+                </span>
+              ) : null}
+            </div>
             {view === "table" ? (
               <div className="bar-legend" aria-label="Metric bar color legend">
                 <span>

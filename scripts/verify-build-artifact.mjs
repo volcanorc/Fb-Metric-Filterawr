@@ -6,6 +6,7 @@ const root = process.cwd();
 const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
 const rankingMarker = "postpulse-independent-ranking-v1";
+const duplicateFilterMarker = "postpulse-title-dedupe-v1";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -77,18 +78,24 @@ const [
   serverHasMarker,
   clientHasRankingMarker,
   serverHasRankingMarker,
+  clientHasDuplicateFilter,
+  serverHasDuplicateFilter,
   cssHasLabelClass,
   cssHasVisibilityRule,
   cssHasRankingControls,
+  cssHasDuplicateFilter,
 ] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
     anyFileContains(serverJavaScript, buildMarker),
     anyFileContains(clientJavaScript, rankingMarker),
     anyFileContains(serverJavaScript, rankingMarker),
+    anyFileContains(clientJavaScript, duplicateFilterMarker),
+    anyFileContains(serverJavaScript, duplicateFilterMarker),
     anyFileContains(cssFiles, "chart-bar-value-label"),
     anyFileContains(cssFiles, "data-bar-labels-visible"),
     anyFileContains(cssFiles, "ranking-metric-menu"),
+    anyFileContains(cssFiles, "duplicate-title-toggle"),
   ]);
 
 if (!clientHasMarker) {
@@ -100,15 +107,21 @@ if (!serverHasMarker) {
 if (!clientHasRankingMarker || !serverHasRankingMarker) {
   fail("the compiled bundle is missing independent multi-metric ranking.");
 }
+if (!clientHasDuplicateFilter || !serverHasDuplicateFilter) {
+  fail("the compiled bundle is missing duplicate-title filtering.");
+}
 if (!cssHasLabelClass || !cssHasVisibilityRule) {
   fail("the compiled CSS is missing the settled bar-label visibility rules.");
 }
 if (!cssHasRankingControls) {
   fail("the compiled CSS is missing the ranking dropdown treatment.");
 }
+if (!cssHasDuplicateFilter) {
+  fail("the compiled CSS is missing the duplicate-title control.");
+}
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with independent ranking and final bar-label behavior.",
+  "Build artifact verified: fresh dist with duplicate filtering, independent ranking, and final bar-label behavior.",
 );

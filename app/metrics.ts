@@ -41,6 +41,7 @@ export type ResultOrder =
   | "performance-asc"
   | "date-desc"
   | "date-asc";
+export type DuplicateTitleMode = "include" | "exclude";
 
 export interface PostMetric {
   postId: string;
@@ -69,6 +70,11 @@ export interface CsvParseResult {
   mismatchRows: number;
   invalidNumericCells: number;
   parserWarnings: number;
+}
+
+export interface DuplicateTitleResult {
+  posts: PostMetric[];
+  hiddenCount: number;
 }
 
 export interface FilterState {
@@ -921,6 +927,47 @@ export function sortPosts(
       return comparison || left.sourceIndex - right.sourceIndex;
     })
     .map(({ post }) => post);
+}
+
+function normalizeDuplicateTitlePart(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+export function getDuplicateTitleKey(post: PostMetric): string {
+  const cleanedTitle = normalizeDuplicateTitlePart(
+    stripHashtagWords(post.title),
+  );
+  const originalTitle = normalizeDuplicateTitlePart(post.title);
+  const pageKey = normalizeDuplicateTitlePart(
+    post.pageId || post.pageName || "unknown page",
+  );
+  const titleKey = cleanedTitle || originalTitle || post.postId;
+  return `${pageKey}\u0000${titleKey}`;
+}
+
+export function applyDuplicateTitleMode(
+  posts: PostMetric[],
+  mode: DuplicateTitleMode,
+  sorting: SortRule[],
+  selectedMetrics: readonly CorePerformanceMetricKey[] = ["views"],
+): DuplicateTitleResult {
+  if (mode === "include") {
+    return { posts: [...posts], hiddenCount: 0 };
+  }
+
+  const orderedPosts = sortPosts(posts, sorting, selectedMetrics);
+  const seenTitles = new Set<string>();
+  const survivingPosts = orderedPosts.filter((post) => {
+    const key = getDuplicateTitleKey(post);
+    if (seenTitles.has(key)) return false;
+    seenTitles.add(key);
+    return true;
+  });
+
+  return {
+    posts: survivingPosts,
+    hiddenCount: posts.length - survivingPosts.length,
+  };
 }
 
 function getBucketStart(

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
+  applyDuplicateTitleMode,
   buildChartData,
   calculateBalancedPerformanceScores,
   calculateTotals,
@@ -12,6 +13,7 @@ import {
   getChartDataSignature,
   getDisplayedRowNumber,
   getDateBounds,
+  getDuplicateTitleKey,
   getResultSortRule,
   isCustomDateRangeValid,
   parseDashboardPreferences,
@@ -135,6 +137,207 @@ test("balances selected metrics instead of rewarding one-metric outliers", () =>
   assert.ok(Math.abs(scores[0] - 100 / 1.2) < 0.000001);
   assert.equal(scores[1], 100);
   assert.ok(Math.abs(scores[2] - 100 / 6) < 0.000001);
+});
+
+test("normalizes cleaned duplicate titles within each Facebook page", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const first = {
+    ...base,
+    postId: "first",
+    title: "The Piazza offers a retreat #city",
+  };
+  const sameCleanedTitle = {
+    ...base,
+    postId: "same-cleaned",
+    title: "  the piazza offers\n a retreat   #night ",
+  };
+  const differentPage = {
+    ...base,
+    postId: "different-page",
+    pageId: "another-page",
+    pageName: "Another page",
+    title: "The Piazza offers a retreat",
+  };
+  const differentPunctuation = {
+    ...base,
+    postId: "different-punctuation",
+    title: "The Piazza offers a retreat!",
+  };
+  const hashtagOnlyOne = {
+    ...base,
+    postId: "hashtags-one",
+    title: "#one",
+  };
+  const hashtagOnlyTwo = {
+    ...base,
+    postId: "hashtags-two",
+    title: "#two",
+  };
+
+  assert.equal(
+    getDuplicateTitleKey(first),
+    getDuplicateTitleKey(sameCleanedTitle),
+  );
+  assert.notEqual(
+    getDuplicateTitleKey(first),
+    getDuplicateTitleKey(differentPage),
+  );
+  assert.notEqual(
+    getDuplicateTitleKey(first),
+    getDuplicateTitleKey(differentPunctuation),
+  );
+  assert.notEqual(
+    getDuplicateTitleKey(hashtagOnlyOne),
+    getDuplicateTitleKey(hashtagOnlyTwo),
+  );
+});
+
+test("keeps one post from duplicate groups of two, three, and four", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const groupSizes = [2, 3, 4];
+  const duplicateGroups = groupSizes.flatMap((size, groupIndex) =>
+    Array.from({ length: size }, (_, postIndex) => ({
+      ...base,
+      postId: `group-${groupIndex}-${postIndex}`,
+      title: `Repeated title ${groupIndex}`,
+      views: 100 - postIndex,
+      publishedAt: base.publishedAt - postIndex,
+    })),
+  );
+  const posts = [
+    ...duplicateGroups,
+    { ...base, postId: "unique", title: "Unique title" },
+  ];
+
+  const included = applyDuplicateTitleMode(
+    posts,
+    "include",
+    getResultSortRule("performance-desc"),
+    ["views"],
+  );
+  assert.equal(included.posts.length, 10);
+  assert.equal(included.hiddenCount, 0);
+
+  const excluded = applyDuplicateTitleMode(
+    posts,
+    "exclude",
+    getResultSortRule("performance-desc"),
+    ["views"],
+  );
+  assert.equal(excluded.posts.length, 4);
+  assert.equal(excluded.hiddenCount, 6);
+  assert.deepEqual(
+    excluded.posts
+      .filter((post) => post.postId.startsWith("group-"))
+      .map((post) => post.postId)
+      .sort(),
+    ["group-0-0", "group-1-0", "group-2-0"],
+  );
+});
+
+test("retains the duplicate representative selected by current result order", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const day = 24 * 60 * 60 * 1000;
+  const posts = [
+    {
+      ...base,
+      postId: "strong-old",
+      title: "Repeated campaign",
+      views: 100,
+      publishedAt: base.publishedAt - 2 * day,
+    },
+    {
+      ...base,
+      postId: "weak-new",
+      title: "repeated campaign #latest",
+      views: 10,
+      publishedAt: base.publishedAt,
+    },
+    {
+      ...base,
+      postId: "middle",
+      title: "Repeated  campaign",
+      views: 50,
+      publishedAt: base.publishedAt - day,
+    },
+  ];
+
+  const retainedId = (order) =>
+    applyDuplicateTitleMode(
+      posts,
+      "exclude",
+      getResultSortRule(order),
+      ["views"],
+    ).posts[0].postId;
+
+  assert.equal(retainedId("performance-desc"), "strong-old");
+  assert.equal(retainedId("performance-asc"), "weak-new");
+  assert.equal(retainedId("date-desc"), "weak-new");
+  assert.equal(retainedId("date-asc"), "strong-old");
+});
+
+test("deduplicates filtered results before chart totals and grouping", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    {
+      ...base,
+      postId: "visible-best",
+      title: "Same title",
+      views: 100,
+      postType: "Photos",
+    },
+    {
+      ...base,
+      postId: "visible-duplicate",
+      title: "same title #tag",
+      views: 60,
+      postType: "Photos",
+    },
+    {
+      ...base,
+      postId: "filtered-out",
+      title: "Same title",
+      views: 500,
+      postType: "Videos",
+    },
+    {
+      ...base,
+      postId: "unique",
+      title: "Unique title",
+      views: 25,
+      postType: "Photos",
+    },
+  ];
+  const filtered = filterPosts(posts, {
+    search: "",
+    datePreset: "30d",
+    customStart: "",
+    customEnd: "",
+    pageName: "",
+    postType: "Photos",
+    ranges: {},
+  });
+  const result = applyDuplicateTitleMode(
+    filtered,
+    "exclude",
+    getResultSortRule("performance-desc"),
+    ["views"],
+  );
+  const points = buildChartData(
+    result.posts,
+    "day",
+    getResultSortRule("performance-desc"),
+    ["views"],
+  );
+
+  assert.equal(result.hiddenCount, 1);
+  assert.deepEqual(
+    result.posts.map((post) => post.postId).sort(),
+    ["unique", "visible-best"],
+  );
+  assert.equal(points.length, 1);
+  assert.equal(points[0].postCount, 2);
+  assert.equal(points[0].views, 125);
 });
 
 test("uses a latest-data anchored 30-day default date range", () => {
