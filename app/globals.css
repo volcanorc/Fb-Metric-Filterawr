@@ -792,22 +792,6 @@ summary:focus-visible {
   font-size: 9px;
 }
 
-.ranking-replacement-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  margin: 7px 1px 0;
-  color: var(--amber);
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
-.ranking-replacement-notice svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
-}
-
 .order-result-note {
   margin: 7px 1px 0;
   color: var(--subtle);

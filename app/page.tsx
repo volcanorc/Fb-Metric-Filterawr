@@ -938,8 +938,6 @@ export default function Home() {
   const [rankingMetrics, setRankingMetrics] = useState<RankingMetricKey[]>([
     "views",
   ]);
-  const [rankingReplacementNotice, setRankingReplacementNotice] =
-    useState("");
   const [resultOrder, setResultOrder] =
     useState<ResultOrder>("performance-desc");
   const [duplicateTitleMode, setDuplicateTitleMode] =
@@ -1183,36 +1181,9 @@ export default function Home() {
       if (checked) {
         setColumnVisibility(visibilityFromMetrics(result.visibleMetrics));
       }
-      if (result.removedMetrics.length) {
-        const selectedLabel =
-          tableMetricDefinitions.find((metric) => metric.key === key)?.label ??
-          key;
-        const removedLabels = result.removedMetrics
-          .map(
-            (removedKey) =>
-              tableMetricDefinitions.find(
-                (metric) => metric.key === removedKey,
-              )?.label ?? removedKey,
-          )
-          .join(" + ");
-        setRankingReplacementNotice(
-          `${selectedLabel} selected; ${removedLabels} removed from ranking to avoid double counting.`,
-        );
-      } else {
-        setRankingReplacementNotice("");
-      }
     },
     [rankingMetrics, visibleMetricKeys],
   );
-
-  useEffect(() => {
-    if (!rankingReplacementNotice) return;
-    const timeout = window.setTimeout(
-      () => setRankingReplacementNotice(""),
-      5200,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [rankingReplacementNotice]);
 
   const columns = useMemo<ColumnDef<PostMetric>[]>(() => {
     const base: ColumnDef<PostMetric>[] = [
@@ -1404,7 +1375,6 @@ export default function Home() {
       setFileName(file.name);
       setFilters(defaultFilters);
       setDuplicateTitleMode("include");
-      setRankingReplacementNotice("");
       setPagination((current) => ({ ...current, pageIndex: 0 }));
     } catch (error) {
       setUploadError(
@@ -1441,7 +1411,6 @@ export default function Home() {
     setFilters(defaultFilters);
     setDuplicateTitleMode("include");
     setRankingMetrics(["views"]);
-    setRankingReplacementNotice("");
     setResultOrder("performance-desc");
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }
@@ -1714,12 +1683,6 @@ export default function Home() {
                   </div>
                 ) : null}
               </div>
-              {rankingReplacementNotice ? (
-                <p className="ranking-replacement-notice" role="status">
-                  <Info size={12} />
-                  {rankingReplacementNotice}
-                </p>
-              ) : null}
               <p className="balanced-ranking-note">
                 <Sparkles size={12} />
                 <span>
