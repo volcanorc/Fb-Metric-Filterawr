@@ -5,8 +5,8 @@ import process from "node:process";
 const root = process.cwd();
 const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
-const rankingMarker = "postpulse-independent-ranking-v1";
-const duplicateFilterMarker = "postpulse-title-dedupe-v1";
+const rankingMarker = "postpulse-accurate-ranking-v2";
+const duplicateFilterMarker = "postpulse-best-duplicate-v2";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -123,5 +123,5 @@ if (!cssHasDuplicateFilter) {
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with duplicate filtering, independent ranking, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with best-copy deduplication, overlap-safe ranking, clicks, and final bar-label behavior.",
 );

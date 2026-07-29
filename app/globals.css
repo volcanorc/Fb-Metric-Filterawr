@@ -733,6 +733,31 @@ summary:focus-visible {
   color: var(--blue-deep);
 }
 
+.ranking-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.ranking-option-copy b {
+  color: inherit;
+  font-size: 10px;
+}
+
+.ranking-option-copy small {
+  overflow: hidden;
+  color: var(--subtle);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+}
+
+.ranking-option-copy small.ranking-option-warning {
+  color: var(--amber);
+  white-space: normal;
+}
+
 .ranking-metric-menu p {
   grid-column: 1 / -1;
   margin: 3px 2px 1px;
@@ -745,7 +770,7 @@ summary:focus-visible {
 
 .balanced-ranking-note {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 5px;
   margin: 7px 1px 0;
   color: var(--blue-deep);
@@ -755,6 +780,32 @@ summary:focus-visible {
 
 .balanced-ranking-note svg {
   flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.balanced-ranking-note span {
+  display: grid;
+  gap: 1px;
+}
+
+.balanced-ranking-note strong {
+  font-size: 9px;
+}
+
+.ranking-replacement-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 7px 1px 0;
+  color: var(--amber);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.ranking-replacement-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 .order-result-note {
@@ -1251,7 +1302,7 @@ summary:focus-visible {
   color: var(--amber);
   font-size: 8px;
   font-weight: 750;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .bar-legend {
@@ -1386,6 +1437,33 @@ th.ranking-column {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+
+button.metric-column-heading {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+button.metric-column-heading:hover {
+  color: var(--blue-deep);
+}
+
+button.metric-column-heading[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+button.metric-column-heading:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
 }
 
 .metric-column-heading.is-ranking {
@@ -2545,13 +2623,31 @@ td time {
     gap: 10px;
   }
 
-  .mobile-metrics > div > span {
+  .mobile-metrics > div > button {
+    width: fit-content;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: var(--muted);
+    font-family: inherit;
     font-size: 9px;
     font-weight: 700;
+    text-align: left;
+    cursor: pointer;
   }
 
-  .mobile-metrics > div > span.mobile-ranking-label {
+  .mobile-metrics > div > button:disabled {
+    opacity: 1;
+    cursor: default;
+  }
+
+  .mobile-metrics > div > button:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid var(--blue);
+    outline-offset: 3px;
+  }
+
+  .mobile-metrics > div > button.mobile-ranking-label {
     color: var(--blue-deep);
   }
 

@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
+  RANKING_METRICS,
   applyDuplicateTitleMode,
   buildChartData,
+  calculateBalancedPerformanceDetails,
   calculateBalancedPerformanceScores,
   calculateTotals,
   completeChartMetricExit,
@@ -18,6 +20,7 @@ import {
   isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
+  normalizeRankingMetrics,
   reconcileChartMetricTransition,
   resolveChartDatum,
   selectAxisLabelIndexes,
@@ -26,6 +29,9 @@ import {
   shouldShowBarValueLabels,
   sortPosts,
   stripHashtagWords,
+  tableMetricDefinitions,
+  toggleRankingMetricSelection,
+  updateRankingMetricAndVisibility,
   getPostHeadline,
 } from "../app/metrics.ts";
 import { SAMPLE_CSV } from "../app/sample-data.ts";
@@ -42,6 +48,12 @@ test("parses the supplied sample and reconciles the expected totals", () => {
   assert.equal(totals.comments, 1);
   assert.equal(totals.shares, 9);
   assert.equal(totals.totalClicks, 6);
+  for (const post of result.posts) {
+    assert.equal(
+      post.engagement,
+      post.reactions + post.comments + post.shares,
+    );
+  }
   assert.equal(result.mismatchRows, 0);
   assert.equal(
     [...result.posts].sort((a, b) => b.views - a.views)[0].views,
@@ -139,6 +151,48 @@ test("balances selected metrics instead of rewarding one-metric outliers", () =>
   assert.ok(Math.abs(scores[2] - 100 / 6) < 0.000001);
 });
 
+test("uses Total Clicks as an independent balanced ranking metric", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    {
+      ...base,
+      postId: "balanced-clicks",
+      views: 80,
+      totalClicks: 8,
+      engagement: 1,
+    },
+    {
+      ...base,
+      postId: "view-only",
+      views: 100,
+      totalClicks: 1,
+      engagement: 100,
+    },
+  ];
+
+  assert.equal(
+    sortPosts(
+      posts,
+      getResultSortRule("performance-desc"),
+      ["views", "totalClicks"],
+    )[0].postId,
+    "balanced-clicks",
+  );
+  assert.equal(posts[0].engagement, 1);
+  assert.equal(posts[0].totalClicks, 8);
+  assert.ok(RANKING_METRICS.includes("totalClicks"));
+  assert.equal(
+    tableMetricDefinitions.find(({ key }) => key === "totalClicks")
+      ?.quickControl,
+    true,
+  );
+  assert.equal(
+    tableMetricDefinitions.find(({ key }) => key === "otherClicks")
+      ?.rankingEligible,
+    undefined,
+  );
+});
+
 test("normalizes cleaned duplicate titles within each Facebook page", () => {
   const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
   const first = {
@@ -173,6 +227,16 @@ test("normalizes cleaned duplicate titles within each Facebook page", () => {
     postId: "hashtags-two",
     title: "#two",
   };
+  const blankOne = {
+    ...base,
+    postId: "blank-one",
+    title: "",
+  };
+  const blankTwo = {
+    ...base,
+    postId: "blank-two",
+    title: "",
+  };
 
   assert.equal(
     getDuplicateTitleKey(first),
@@ -189,6 +253,10 @@ test("normalizes cleaned duplicate titles within each Facebook page", () => {
   assert.notEqual(
     getDuplicateTitleKey(hashtagOnlyOne),
     getDuplicateTitleKey(hashtagOnlyTwo),
+  );
+  assert.notEqual(
+    getDuplicateTitleKey(blankOne),
+    getDuplicateTitleKey(blankTwo),
   );
 });
 
@@ -212,7 +280,6 @@ test("keeps one post from duplicate groups of two, three, and four", () => {
   const included = applyDuplicateTitleMode(
     posts,
     "include",
-    getResultSortRule("performance-desc"),
     ["views"],
   );
   assert.equal(included.posts.length, 10);
@@ -221,7 +288,6 @@ test("keeps one post from duplicate groups of two, three, and four", () => {
   const excluded = applyDuplicateTitleMode(
     posts,
     "exclude",
-    getResultSortRule("performance-desc"),
     ["views"],
   );
   assert.equal(excluded.posts.length, 4);
@@ -235,7 +301,7 @@ test("keeps one post from duplicate groups of two, three, and four", () => {
   );
 });
 
-test("retains the duplicate representative selected by current result order", () => {
+test("always retains the best-performing duplicate representative", () => {
   const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
   const day = 24 * 60 * 60 * 1000;
   const posts = [
@@ -262,18 +328,25 @@ test("retains the duplicate representative selected by current result order", ()
     },
   ];
 
-  const retainedId = (order) =>
-    applyDuplicateTitleMode(
-      posts,
-      "exclude",
-      getResultSortRule(order),
-      ["views"],
-    ).posts[0].postId;
+  const deduplicated = applyDuplicateTitleMode(
+    posts,
+    "exclude",
+    ["views"],
+  ).posts;
+  assert.equal(deduplicated.length, 1);
+  assert.equal(deduplicated[0].postId, "strong-old");
 
-  assert.equal(retainedId("performance-desc"), "strong-old");
-  assert.equal(retainedId("performance-asc"), "weak-new");
-  assert.equal(retainedId("date-desc"), "weak-new");
-  assert.equal(retainedId("date-asc"), "strong-old");
+  for (const order of [
+    "performance-desc",
+    "performance-asc",
+    "date-desc",
+    "date-asc",
+  ]) {
+    assert.equal(
+      sortPosts(deduplicated, getResultSortRule(order), ["views"])[0].postId,
+      "strong-old",
+    );
+  }
 });
 
 test("deduplicates filtered results before chart totals and grouping", () => {
@@ -320,7 +393,6 @@ test("deduplicates filtered results before chart totals and grouping", () => {
   const result = applyDuplicateTitleMode(
     filtered,
     "exclude",
-    getResultSortRule("performance-desc"),
     ["views"],
   );
   const points = buildChartData(
@@ -540,13 +612,13 @@ test("keeps every post in large ungrouped chart datasets", () => {
   assert.equal(buildChartData(posts, "post", []).length, 500);
 });
 
-test("validates V4 preferences with independent ranking and visibility", () => {
+test("validates V5 preferences with clicks ranking and independent visibility", () => {
   const preferences = parseDashboardPreferences(
     JSON.stringify({
-      version: 4,
+      version: 5,
       view: "lines",
       visibleMetrics: ["totalClicks"],
-      rankingMetrics: ["reach", "comments"],
+      rankingMetrics: ["reach", "comments", "totalClicks"],
       resultOrder: "date-asc",
       chartGrouping: "month",
       pageSize: 50,
@@ -555,12 +627,164 @@ test("validates V4 preferences with independent ranking and visibility", () => {
 
   assert.equal(preferences.view, "lines");
   assert.deepEqual(preferences.visibleMetrics, ["totalClicks"]);
-  assert.deepEqual(preferences.rankingMetrics, ["reach", "comments"]);
+  assert.deepEqual(preferences.rankingMetrics, [
+    "reach",
+    "comments",
+    "totalClicks",
+  ]);
   assert.equal(preferences.resultOrder, "date-asc");
   assert.equal(preferences.chartGrouping, "month");
   assert.equal(preferences.pageSize, 50);
   assert.equal(preferences.showMetricQuickControls, true);
   assert.equal(preferences.tableInternalScroll, false);
+});
+
+test("migrates V4 ranking preferences and removes aggregate overlap", () => {
+  const migrated = parseDashboardPreferences(
+    JSON.stringify({
+      version: 4,
+      view: "bars",
+      visibleMetrics: ["views", "engagement", "comments"],
+      rankingMetrics: ["views", "engagement", "comments"],
+      resultOrder: "performance-desc",
+      chartGrouping: "post",
+      pageSize: 25,
+      showMetricQuickControls: true,
+      tableInternalScroll: false,
+    }),
+  );
+
+  assert.equal(migrated.version, 5);
+  assert.deepEqual(migrated.visibleMetrics, [
+    "views",
+    "engagement",
+    "comments",
+  ]);
+  assert.deepEqual(migrated.rankingMetrics, ["views", "comments"]);
+});
+
+test("prevents engagement-component double counting in every toggle direction", () => {
+  assert.deepEqual(
+    normalizeRankingMetrics(["views", "engagement", "comments"]),
+    ["views", "comments"],
+  );
+
+  const engagementSelected = toggleRankingMetricSelection(
+    ["views", "comments", "shares"],
+    "engagement",
+    true,
+  );
+  assert.deepEqual(engagementSelected.metrics, ["views", "engagement"]);
+  assert.deepEqual(engagementSelected.removedMetrics, [
+    "comments",
+    "shares",
+  ]);
+
+  const commentSelected = toggleRankingMetricSelection(
+    ["views", "engagement"],
+    "comments",
+    true,
+  );
+  assert.deepEqual(commentSelected.metrics, ["views", "comments"]);
+  assert.deepEqual(commentSelected.removedMetrics, ["engagement"]);
+
+  const clicksSelected = toggleRankingMetricSelection(
+    ["views", "comments"],
+    "totalClicks",
+    true,
+  );
+  assert.deepEqual(clicksSelected.metrics, [
+    "views",
+    "comments",
+    "totalClicks",
+  ]);
+  assert.deepEqual(clicksSelected.removedMetrics, []);
+
+  const lastMetricGuard = toggleRankingMetricSelection(
+    ["totalClicks"],
+    "totalClicks",
+    false,
+  );
+  assert.deepEqual(lastMetricGuard.metrics, ["totalClicks"]);
+  assert.equal(lastMetricGuard.changed, false);
+});
+
+test("automatically shows newly selected ranking metrics without hiding them later", () => {
+  const added = updateRankingMetricAndVisibility(
+    ["views"],
+    ["views"],
+    "totalClicks",
+    true,
+  );
+  assert.deepEqual(added.metrics, ["views", "totalClicks"]);
+  assert.deepEqual(added.visibleMetrics, ["views", "totalClicks"]);
+
+  const removed = updateRankingMetricAndVisibility(
+    added.metrics,
+    added.visibleMetrics,
+    "totalClicks",
+    false,
+  );
+  assert.deepEqual(removed.metrics, ["views"]);
+  assert.deepEqual(removed.visibleMetrics, ["views", "totalClicks"]);
+
+  const overlap = updateRankingMetricAndVisibility(
+    ["views", "engagement"],
+    ["views", "engagement"],
+    "comments",
+    true,
+  );
+  assert.deepEqual(overlap.metrics, ["views", "comments"]);
+  assert.deepEqual(overlap.visibleMetrics, [
+    "views",
+    "engagement",
+    "comments",
+  ]);
+});
+
+test("uses normalized mean as a deterministic fallback for zero primary scores", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    {
+      ...base,
+      postId: "strong-zero-comment",
+      publishedAt: base.publishedAt - 1000,
+      views: 100,
+      comments: 0,
+    },
+    {
+      ...base,
+      postId: "weak-zero-comment",
+      publishedAt: base.publishedAt,
+      views: 10,
+      comments: 0,
+    },
+    {
+      ...base,
+      postId: "commented",
+      publishedAt: base.publishedAt - 2000,
+      views: 20,
+      comments: 1,
+    },
+  ];
+
+  const details = calculateBalancedPerformanceDetails(posts, [
+    "views",
+    "comments",
+  ]);
+  assert.equal(details[0].primary, 0);
+  assert.equal(details[1].primary, 0);
+  assert.ok(details[0].tieBreaker > details[1].tieBreaker);
+
+  const sorted = sortPosts(
+    posts,
+    getResultSortRule("performance-desc"),
+    ["views", "comments"],
+  );
+  assert.deepEqual(
+    sorted.map((post) => post.postId),
+    ["commented", "strong-zero-comment", "weak-zero-comment"],
+  );
 });
 
 test("uses Views and best performance as the fresh default", () => {
@@ -590,7 +814,7 @@ test("uses Views and best performance as the fresh default", () => {
     }),
   );
   assert.deepEqual(saved.visibleMetrics, ["reach", "comments"]);
-  assert.equal(saved.version, 4);
+  assert.equal(saved.version, 5);
   assert.deepEqual(saved.rankingMetrics, ["reach"]);
   assert.equal(saved.resultOrder, "performance-asc");
   assert.equal(saved.showMetricQuickControls, false);

@@ -73,26 +73,27 @@ import {
   type ChartGrouping,
   type ChartInteractionState,
   type ChartMetricTransitionState,
-  type CorePerformanceMetricKey,
   type CsvParseResult,
-  type DashboardPreferencesV4,
+  type DashboardPreferencesV5,
   type DashboardView,
   type DatePreset,
   type DuplicateTitleMode,
   type FilterState,
   type NumericRange,
   type PostMetric,
+  type RankingMetricKey,
   type ResultOrder,
   type TableMetricKey,
-  CORE_PERFORMANCE_METRICS,
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   DEFAULT_VISIBLE_METRICS,
   LEGACY_PREFERENCES_STORAGE_KEY,
+  LEGACY_V3_PREFERENCES_STORAGE_KEY,
   LEGACY_V2_PREFERENCES_STORAGE_KEY,
   LEGACY_VIEW_KEY,
   LEGACY_VISIBILITY_KEY,
   PREFERENCES_STORAGE_KEY,
+  RANKING_METRICS,
   applyDuplicateTitleMode,
   buildChartData,
   calculateTotals,
@@ -120,6 +121,7 @@ import {
   sortPosts,
   stripHashtagWords,
   tableMetricDefinitions,
+  updateRankingMetricAndVisibility,
 } from "./metrics";
 
 const EMPTY_DATASET: CsvParseResult = {
@@ -141,13 +143,13 @@ const defaultFilters: FilterState = {
 };
 
 type Icon = ComponentType<SVGProps<SVGSVGElement> & { size?: number }>;
-const CORE_METRIC_SET = new Set<TableMetricKey>(CORE_PERFORMANCE_METRICS);
-const coreMetricDefinitions = tableMetricDefinitions.filter(
+const RANKING_METRIC_SET = new Set<TableMetricKey>(RANKING_METRICS);
+const rankingMetricDefinitions = tableMetricDefinitions.filter(
   (
     metric,
   ): metric is (typeof tableMetricDefinitions)[number] & {
-    key: CorePerformanceMetricKey;
-  } => CORE_METRIC_SET.has(metric.key),
+    key: RankingMetricKey;
+  } => RANKING_METRIC_SET.has(metric.key),
 );
 
 function visibilityFromMetrics(metrics: TableMetricKey[]): VisibilityState {
@@ -355,7 +357,7 @@ function MetricQuickControls({
   onHighlight?: (key: TableMetricKey | null) => void;
 }) {
   const displayedMetrics = tableMetricDefinitions.filter(
-    ({ key }) => CORE_METRIC_SET.has(key) || visibleMetrics.includes(key),
+    ({ key, quickControl }) => quickControl || visibleMetrics.includes(key),
   );
 
   return (
@@ -933,9 +935,11 @@ export default function Home() {
   const [dataset, setDataset] = useState<CsvParseResult>(EMPTY_DATASET);
   const [fileName, setFileName] = useState("");
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
-  const [rankingMetrics, setRankingMetrics] = useState<
-    CorePerformanceMetricKey[]
-  >(["views"]);
+  const [rankingMetrics, setRankingMetrics] = useState<RankingMetricKey[]>([
+    "views",
+  ]);
+  const [rankingReplacementNotice, setRankingReplacementNotice] =
+    useState("");
   const [resultOrder, setResultOrder] =
     useState<ResultOrder>("performance-desc");
   const [duplicateTitleMode, setDuplicateTitleMode] =
@@ -969,6 +973,7 @@ export default function Home() {
       const preferences = parseDashboardPreferences(
         window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_V3_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_V2_PREFERENCES_STORAGE_KEY),
         window.localStorage.getItem(LEGACY_VISIBILITY_KEY),
         window.localStorage.getItem(LEGACY_VIEW_KEY),
@@ -999,8 +1004,8 @@ export default function Home() {
   );
   useEffect(() => {
     if (!preferencesReady) return;
-    const preferences: DashboardPreferencesV4 = {
-      version: 4,
+    const preferences: DashboardPreferencesV5 = {
+      version: 5,
       view,
       visibleMetrics: visibleMetricKeys,
       rankingMetrics,
@@ -1016,6 +1021,7 @@ export default function Home() {
         JSON.stringify(preferences),
       );
       window.localStorage.removeItem(LEGACY_PREFERENCES_STORAGE_KEY);
+      window.localStorage.removeItem(LEGACY_V3_PREFERENCES_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_V2_PREFERENCES_STORAGE_KEY);
       window.localStorage.removeItem(LEGACY_VISIBILITY_KEY);
       window.localStorage.removeItem(LEGACY_VIEW_KEY);
@@ -1081,15 +1087,9 @@ export default function Home() {
       applyDuplicateTitleMode(
         baseFilteredPosts,
         duplicateTitleMode,
-        activeSorting,
         rankingMetrics,
       ),
-    [
-      activeSorting,
-      baseFilteredPosts,
-      duplicateTitleMode,
-      rankingMetrics,
-    ],
+    [baseFilteredPosts, duplicateTitleMode, rankingMetrics],
   );
   const filteredPosts = duplicateTitleResult.posts;
   const sortedPosts = useMemo(
@@ -1169,6 +1169,51 @@ export default function Home() {
     }
   }, []);
 
+  const toggleRankingMetric = useCallback(
+    (key: RankingMetricKey, checked: boolean) => {
+      const result = updateRankingMetricAndVisibility(
+        rankingMetrics,
+        visibleMetricKeys,
+        key,
+        checked,
+      );
+      if (!result.changed) return;
+
+      setRankingMetrics(result.metrics);
+      if (checked) {
+        setColumnVisibility(visibilityFromMetrics(result.visibleMetrics));
+      }
+      if (result.removedMetrics.length) {
+        const selectedLabel =
+          tableMetricDefinitions.find((metric) => metric.key === key)?.label ??
+          key;
+        const removedLabels = result.removedMetrics
+          .map(
+            (removedKey) =>
+              tableMetricDefinitions.find(
+                (metric) => metric.key === removedKey,
+              )?.label ?? removedKey,
+          )
+          .join(" + ");
+        setRankingReplacementNotice(
+          `${selectedLabel} selected; ${removedLabels} removed from ranking to avoid double counting.`,
+        );
+      } else {
+        setRankingReplacementNotice("");
+      }
+    },
+    [rankingMetrics, visibleMetricKeys],
+  );
+
+  useEffect(() => {
+    if (!rankingReplacementNotice) return;
+    const timeout = window.setTimeout(
+      () => setRankingReplacementNotice(""),
+      5200,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [rankingReplacementNotice]);
+
   const columns = useMemo<ColumnDef<PostMetric>[]>(() => {
     const base: ColumnDef<PostMetric>[] = [
       {
@@ -1214,27 +1259,46 @@ export default function Home() {
         accessorFn: (post) => getMetricValue(post, key),
         enableSorting: false,
         header: () => {
-          const isRankingMetric = rankingMetrics.includes(
-            key as CorePerformanceMetricKey,
-          );
-          return (
-            <div
-              className={`metric-column-heading ${
-                isRankingMetric ? "is-ranking" : ""
-              }`}
-              title={
-                isRankingMetric
-                  ? `${label} contributes to balanced ranking`
-                  : undefined
-              }
-            >
+          const rankingEligible = RANKING_METRIC_SET.has(key);
+          const rankingKey = key as RankingMetricKey;
+          const isRankingMetric =
+            rankingEligible && rankingMetrics.includes(rankingKey);
+          const lastRankingMetric =
+            isRankingMetric && rankingMetrics.length === 1;
+          const content = (
+            <>
               <span>{label}</span>
               {isRankingMetric ? (
                 <span className="ranking-indicator">
                   <Sparkles size={10} /> Ranking
                 </span>
               ) : null}
-            </div>
+            </>
+          );
+          if (!rankingEligible) {
+            return <div className="metric-column-heading">{content}</div>;
+          }
+          return (
+            <button
+              type="button"
+              className={`metric-column-heading ${
+                isRankingMetric ? "is-ranking" : ""
+              }`}
+              aria-pressed={isRankingMetric}
+              aria-disabled={lastRankingMetric}
+              onClick={() =>
+                toggleRankingMetric(rankingKey, !isRankingMetric)
+              }
+              title={
+                lastRankingMetric
+                  ? "At least one ranking metric must remain selected"
+                  : `${isRankingMetric ? "Remove" : "Add"} ${label} ${
+                      isRankingMetric ? "from" : "to"
+                    } balanced ranking`
+              }
+            >
+              {content}
+            </button>
           );
         },
         cell: ({ getValue }) => (
@@ -1249,7 +1313,13 @@ export default function Home() {
       }),
     );
     return [...base, ...metricColumns];
-  }, [copiedPostId, copyPostTitle, extremes, rankingMetrics]);
+  }, [
+    copiedPostId,
+    copyPostTitle,
+    extremes,
+    rankingMetrics,
+    toggleRankingMetric,
+  ]);
 
   const table = useReactTable({
     data: sortedPosts,
@@ -1324,20 +1394,6 @@ export default function Home() {
     setColumnVisibility((current) => ({ ...current, [key]: checked }));
   }
 
-  function toggleRankingMetric(
-    key: CorePerformanceMetricKey,
-    checked: boolean,
-  ) {
-    setRankingMetrics((current) => {
-      if (!checked && current.includes(key) && current.length === 1) {
-        return current;
-      }
-      return CORE_PERFORMANCE_METRICS.filter((metric) =>
-        metric === key ? checked : current.includes(metric),
-      );
-    });
-  }
-
   async function handleUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1348,6 +1404,7 @@ export default function Home() {
       setFileName(file.name);
       setFilters(defaultFilters);
       setDuplicateTitleMode("include");
+      setRankingReplacementNotice("");
       setPagination((current) => ({ ...current, pageIndex: 0 }));
     } catch (error) {
       setUploadError(
@@ -1384,6 +1441,7 @@ export default function Home() {
     setFilters(defaultFilters);
     setDuplicateTitleMode("include");
     setRankingMetrics(["views"]);
+    setRankingReplacementNotice("");
     setResultOrder("performance-desc");
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }
@@ -1426,11 +1484,16 @@ export default function Home() {
   );
   const rankingMetricsSummary =
     rankingMetrics.length <= 2
-      ? coreMetricDefinitions
+      ? rankingMetricDefinitions
           .filter(({ key }) => rankingMetrics.includes(key))
           .map(({ label }) => label)
           .join(" + ")
       : `${rankingMetrics.length} metrics selected`;
+  const ignoredRankingMetricSet = new Set(
+    rankingMetrics.filter((key) =>
+      baseFilteredPosts.every((post) => post[key] === 0),
+    ),
+  );
   const performanceOrdering = resultOrder.startsWith("performance");
 
   return (
@@ -1544,7 +1607,7 @@ export default function Home() {
           <div
             className="ranking-controls"
             aria-label="Ranking controls"
-            data-ranking-model="postpulse-independent-ranking-v1"
+            data-ranking-model="postpulse-accurate-ranking-v2"
           >
             <section className="ranking-control-card">
               <div className="ranking-control-heading">
@@ -1602,8 +1665,13 @@ export default function Home() {
                     role="group"
                     aria-label="Metrics used to rank posts"
                   >
-                    {coreMetricDefinitions.map(
-                      ({ key, label, chartColor }) => {
+                    {rankingMetricDefinitions.map(
+                      ({
+                        key,
+                        label,
+                        chartColor,
+                        rankingDescription,
+                      }) => {
                         const checked = rankingMetrics.includes(key);
                         const lastRankingMetric =
                           checked && rankingMetrics.length === 1;
@@ -1621,7 +1689,18 @@ export default function Home() {
                               }
                             />
                             <i style={{ backgroundColor: chartColor }} />
-                            <span>{label}</span>
+                            <span className="ranking-option-copy">
+                              <b>{label}</b>
+                              {rankingDescription ? (
+                                <small>{rankingDescription}</small>
+                              ) : null}
+                              {checked &&
+                              ignoredRankingMetricSet.has(key) ? (
+                                <small className="ranking-option-warning">
+                                  No nonzero values in these results — ignored
+                                </small>
+                              ) : null}
+                            </span>
                             {checked ? <Check size={13} /> : null}
                           </label>
                         );
@@ -1629,15 +1708,26 @@ export default function Home() {
                     )}
                     <p>
                       Posts that perform consistently across all selected
-                      metrics rank higher.
+                      metrics rank higher. Engagement cannot be combined with
+                      its reaction, comment, or share components.
                     </p>
                   </div>
                 ) : null}
               </div>
+              {rankingReplacementNotice ? (
+                <p className="ranking-replacement-notice" role="status">
+                  <Info size={12} />
+                  {rankingReplacementNotice}
+                </p>
+              ) : null}
               <p className="balanced-ranking-note">
                 <Sparkles size={12} />
-                Balancing {rankingMetrics.length}{" "}
-                {rankingMetrics.length === 1 ? "metric" : "metrics"} equally.
+                <span>
+                  <strong>Balanced performance</strong>
+                  Equal weight across {rankingMetrics.length}{" "}
+                  {rankingMetrics.length === 1 ? "metric" : "metrics"}; a
+                  consistent comparison, not a universal quality score.
+                </span>
               </p>
             </section>
 
@@ -1824,8 +1914,9 @@ export default function Home() {
                   </button>
                 </div>
                 <p className="preference-note">
-                  Controls columns and chart series only. Ranking metrics stay
-                  independent. Saved on this device.
+                  Controls columns and chart series. Adding a ranking metric
+                  shows it automatically; you can hide it again here. Saved on
+                  this device.
                 </p>
                 <label className="quick-controls-setting">
                   <input
@@ -1954,7 +2045,7 @@ export default function Home() {
 
           <div
             className="results-meta"
-            data-duplicate-filter="postpulse-title-dedupe-v1"
+            data-duplicate-filter="postpulse-best-duplicate-v2"
           >
             <div className="results-summary">
               <div className="duplicate-title-filter">
@@ -1997,7 +2088,7 @@ export default function Home() {
                         duplicateTitleResult.hiddenCount === 1
                           ? "duplicate post"
                           : "duplicate posts"
-                      } hidden`
+                      } hidden · best-performing copy retained`
                     : "No duplicate titles found"}
                 </span>
               ) : null}
@@ -2046,7 +2137,7 @@ export default function Home() {
                               className={[
                                 header.id === "post" ? "sticky-column" : "",
                                 rankingMetrics.includes(
-                                  header.id as CorePerformanceMetricKey,
+                                  header.id as RankingMetricKey,
                                 )
                                   ? "ranking-column"
                                   : "",
@@ -2149,24 +2240,42 @@ export default function Home() {
                               )
                               .map(({ key, label }) => (
                                 <div key={key}>
-                                  <span
+                                  <button
+                                    type="button"
                                     className={
                                       rankingMetrics.includes(
-                                        key as CorePerformanceMetricKey,
+                                        key as RankingMetricKey,
                                       )
                                         ? "mobile-ranking-label"
                                         : ""
                                     }
+                                    disabled={!RANKING_METRIC_SET.has(key)}
+                                    aria-pressed={
+                                      RANKING_METRIC_SET.has(key)
+                                        ? rankingMetrics.includes(
+                                            key as RankingMetricKey,
+                                          )
+                                        : undefined
+                                    }
+                                    onClick={() => {
+                                      if (!RANKING_METRIC_SET.has(key)) return;
+                                      const rankingKey =
+                                        key as RankingMetricKey;
+                                      toggleRankingMetric(
+                                        rankingKey,
+                                        !rankingMetrics.includes(rankingKey),
+                                      );
+                                    }}
                                   >
                                     {label}
                                     {rankingMetrics.includes(
-                                      key as CorePerformanceMetricKey,
+                                      key as RankingMetricKey,
                                     ) ? (
                                       <em>
                                         <Sparkles size={9} /> Ranking
                                       </em>
                                     ) : null}
-                                  </span>
+                                  </button>
                                   <MetricBar
                                     value={getMetricValue(post, key)}
                                     min={extremes[key].min}
@@ -2406,7 +2515,7 @@ export default function Home() {
                         <>
                           Balanced across
                           <em>
-                            {coreMetricDefinitions
+                            {rankingMetricDefinitions
                               .filter(({ key }) =>
                                 rankingMetrics.includes(key),
                               )
