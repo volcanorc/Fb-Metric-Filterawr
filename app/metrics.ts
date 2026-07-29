@@ -12,6 +12,8 @@ export type MetricKey =
   | "photoClicks";
 
 export type TableMetricKey = MetricKey | "engagementRate";
+export type TableColumnId = "post" | "publishedAt" | TableMetricKey;
+export type TableColumnWidths = Record<TableColumnId, number>;
 export type RankingMetricKey =
   | "views"
   | "reach"
@@ -146,8 +148,8 @@ export interface ChartInteractionState {
   activeIndex?: number | string | null;
 }
 
-export interface DashboardPreferencesV5 {
-  version: 5;
+export interface DashboardPreferencesV6 {
+  version: 6;
   view: DashboardView;
   visibleMetrics: TableMetricKey[];
   rankingMetrics: RankingMetricKey[];
@@ -156,6 +158,7 @@ export interface DashboardPreferencesV5 {
   pageSize: 25 | 50 | 100;
   showMetricQuickControls: boolean;
   tableInternalScroll: boolean;
+  columnWidths: TableColumnWidths;
 }
 
 export interface MetricDefinition {
@@ -170,7 +173,8 @@ export interface MetricDefinition {
   quickControl?: boolean;
 }
 
-export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v5";
+export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v6";
+export const LEGACY_V5_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v5";
 export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v4";
 export const LEGACY_V3_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v3";
 export const LEGACY_V2_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v2";
@@ -292,8 +296,44 @@ const LEGACY_CORE_PERFORMANCE_METRICS: RankingMetricKey[] =
 
 export const DEFAULT_VISIBLE_METRICS: TableMetricKey[] = ["views"];
 
-export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV5 = {
-  version: 5,
+export const TABLE_COLUMN_IDS: TableColumnId[] = [
+  "post",
+  "publishedAt",
+  ...tableMetricDefinitions.map(({ key }) => key),
+];
+
+export const TABLE_COLUMN_DEFAULT_WIDTHS: TableColumnWidths = {
+  post: 310,
+  publishedAt: 112,
+  views: 128,
+  reach: 128,
+  engagement: 128,
+  reactions: 128,
+  comments: 128,
+  shares: 128,
+  totalClicks: 128,
+  otherClicks: 128,
+  photoClicks: 128,
+  engagementRate: 128,
+};
+
+export const TABLE_COLUMN_MIN_WIDTHS: TableColumnWidths = {
+  post: 240,
+  publishedAt: 112,
+  views: 112,
+  reach: 112,
+  engagement: 112,
+  reactions: 112,
+  comments: 112,
+  shares: 112,
+  totalClicks: 112,
+  otherClicks: 112,
+  photoClicks: 112,
+  engagementRate: 112,
+};
+
+export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV6 = {
+  version: 6,
   view: "table",
   visibleMetrics: DEFAULT_VISIBLE_METRICS,
   rankingMetrics: ["views"],
@@ -302,6 +342,7 @@ export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV5 = {
   pageSize: 25,
   showMetricQuickControls: true,
   tableInternalScroll: false,
+  columnWidths: { ...TABLE_COLUMN_DEFAULT_WIDTHS },
 };
 
 const metricKeys = new Set<TableMetricKey>(
@@ -331,11 +372,12 @@ const requiredColumns = [
 
 type RawRow = Record<string, string | undefined>;
 
-function cloneDefaultPreferences(): DashboardPreferencesV5 {
+function cloneDefaultPreferences(): DashboardPreferencesV6 {
   return {
     ...DEFAULT_DASHBOARD_PREFERENCES,
     visibleMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics],
     rankingMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics],
+    columnWidths: { ...DEFAULT_DASHBOARD_PREFERENCES.columnWidths },
   };
 }
 
@@ -363,6 +405,158 @@ function validateVisibleMetrics(value: unknown): TableMetricKey[] | null {
     ),
   ];
   return visible.length ? visible : null;
+}
+
+function validateColumnWidths(value: unknown): TableColumnWidths {
+  const widths = { ...TABLE_COLUMN_DEFAULT_WIDTHS };
+  if (!isRecord(value)) return widths;
+
+  for (const id of TABLE_COLUMN_IDS) {
+    const candidate = value[id];
+    if (typeof candidate !== "number" || !Number.isFinite(candidate)) continue;
+    widths[id] = Math.max(TABLE_COLUMN_MIN_WIDTHS[id], candidate);
+  }
+  return widths;
+}
+
+function roundColumnWidth(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function getColumnWidth(
+  widths: Partial<Record<TableColumnId, number>>,
+  id: TableColumnId,
+): number {
+  const candidate = widths[id];
+  return typeof candidate === "number" && Number.isFinite(candidate)
+    ? Math.max(TABLE_COLUMN_MIN_WIDTHS[id], candidate)
+    : TABLE_COLUMN_DEFAULT_WIDTHS[id];
+}
+
+function growColumns(
+  widths: TableColumnWidths,
+  ids: readonly TableColumnId[],
+  amount: number,
+): TableColumnWidths {
+  if (amount <= 0 || !ids.length) return widths;
+  const next = { ...widths };
+  const totalWeight = ids.reduce(
+    (sum, id) => sum + Math.max(1, next[id]),
+    0,
+  );
+  let distributed = 0;
+  ids.forEach((id, index) => {
+    const share =
+      index === ids.length - 1
+        ? amount - distributed
+        : amount * (Math.max(1, next[id]) / totalWeight);
+    next[id] = roundColumnWidth(next[id] + share);
+    distributed += share;
+  });
+  return next;
+}
+
+function shrinkColumns(
+  widths: TableColumnWidths,
+  ids: readonly TableColumnId[],
+  amount: number,
+): TableColumnWidths {
+  if (amount <= 0 || !ids.length) return widths;
+  const next = { ...widths };
+  const capacities = ids.map((id) =>
+    Math.max(0, next[id] - TABLE_COLUMN_MIN_WIDTHS[id]),
+  );
+  const totalCapacity = capacities.reduce((sum, capacity) => sum + capacity, 0);
+  if (totalCapacity <= 0) return next;
+
+  const appliedAmount = Math.min(amount, totalCapacity);
+  let distributed = 0;
+  ids.forEach((id, index) => {
+    const share =
+      index === ids.length - 1
+        ? appliedAmount - distributed
+        : appliedAmount * (capacities[index] / totalCapacity);
+    next[id] = roundColumnWidth(
+      Math.max(TABLE_COLUMN_MIN_WIDTHS[id], next[id] - share),
+    );
+    distributed += share;
+  });
+  return next;
+}
+
+export function fitTableColumnWidths(
+  currentWidths: Partial<Record<TableColumnId, number>>,
+  visibleColumnIds: readonly TableColumnId[],
+  availableWidth: number,
+): TableColumnWidths {
+  const next = Object.fromEntries(
+    TABLE_COLUMN_IDS.map((id) => [id, getColumnWidth(currentWidths, id)]),
+  ) as TableColumnWidths;
+  if (!visibleColumnIds.length || !Number.isFinite(availableWidth)) return next;
+
+  const minimumTotal = visibleColumnIds.reduce(
+    (sum, id) => sum + TABLE_COLUMN_MIN_WIDTHS[id],
+    0,
+  );
+  const targetTotal = Math.max(minimumTotal, availableWidth);
+  const currentTotal = visibleColumnIds.reduce(
+    (sum, id) => sum + next[id],
+    0,
+  );
+  if (Math.abs(currentTotal - targetTotal) < 0.5) return next;
+
+  return currentTotal < targetTotal
+    ? growColumns(next, visibleColumnIds, targetTotal - currentTotal)
+    : shrinkColumns(next, visibleColumnIds, currentTotal - targetTotal);
+}
+
+export function getDynamicColumnMaxWidth(
+  widths: Partial<Record<TableColumnId, number>>,
+  visibleColumnIds: readonly TableColumnId[],
+  resizedColumnId: TableColumnId,
+): number {
+  const totalWidth = visibleColumnIds.reduce(
+    (sum, id) => sum + getColumnWidth(widths, id),
+    0,
+  );
+  const otherMinimums = visibleColumnIds.reduce(
+    (sum, id) =>
+      id === resizedColumnId ? sum : sum + TABLE_COLUMN_MIN_WIDTHS[id],
+    0,
+  );
+  return Math.max(
+    TABLE_COLUMN_MIN_WIDTHS[resizedColumnId],
+    totalWidth - otherMinimums,
+  );
+}
+
+export function redistributeTableColumnWidth(
+  currentWidths: Partial<Record<TableColumnId, number>>,
+  visibleColumnIds: readonly TableColumnId[],
+  resizedColumnId: TableColumnId,
+  requestedWidth: number,
+): TableColumnWidths {
+  const next = Object.fromEntries(
+    TABLE_COLUMN_IDS.map((id) => [id, getColumnWidth(currentWidths, id)]),
+  ) as TableColumnWidths;
+  if (!visibleColumnIds.includes(resizedColumnId)) return next;
+
+  const minimum = TABLE_COLUMN_MIN_WIDTHS[resizedColumnId];
+  const maximum = getDynamicColumnMaxWidth(
+    next,
+    visibleColumnIds,
+    resizedColumnId,
+  );
+  const target = Math.min(maximum, Math.max(minimum, requestedWidth));
+  const current = next[resizedColumnId];
+  const delta = target - current;
+  if (Math.abs(delta) < 0.01) return next;
+
+  const otherIds = visibleColumnIds.filter((id) => id !== resizedColumnId);
+  next[resizedColumnId] = roundColumnWidth(target);
+  return delta > 0
+    ? shrinkColumns(next, otherIds, delta)
+    : growColumns(next, otherIds, -delta);
 }
 
 export function normalizeRankingMetrics(
@@ -518,13 +712,13 @@ export function parseDashboardPreferences(
   storedValue: string | null,
   legacyVisibilityValue: string | null = null,
   legacyViewValue: string | null = null,
-): DashboardPreferencesV5 {
+): DashboardPreferencesV6 {
   const defaults = cloneDefaultPreferences();
   const stored = parseJson(storedValue);
 
-  if (isRecord(stored) && stored.version === 5) {
+  if (isRecord(stored) && (stored.version === 6 || stored.version === 5)) {
     return {
-      version: 5,
+      version: 6,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -554,12 +748,16 @@ export function parseDashboardPreferences(
         typeof stored.tableInternalScroll === "boolean"
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
+      columnWidths:
+        stored.version === 6
+          ? validateColumnWidths(stored.columnWidths)
+          : { ...defaults.columnWidths },
     };
   }
 
   if (isRecord(stored) && stored.version === 4) {
     return {
-      version: 5,
+      version: 6,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -589,6 +787,7 @@ export function parseDashboardPreferences(
         typeof stored.tableInternalScroll === "boolean"
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
+      columnWidths: { ...defaults.columnWidths },
     };
   }
 
@@ -599,7 +798,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 5,
+      version: 6,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -625,6 +824,7 @@ export function parseDashboardPreferences(
         typeof stored.tableInternalScroll === "boolean"
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
+      columnWidths: { ...defaults.columnWidths },
     };
   }
 
@@ -643,7 +843,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 5,
+      version: 6,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -669,6 +869,7 @@ export function parseDashboardPreferences(
         typeof stored.tableInternalScroll === "boolean"
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
+      columnWidths: { ...defaults.columnWidths },
     };
   }
 

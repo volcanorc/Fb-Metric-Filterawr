@@ -7,6 +7,7 @@ const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
 const rankingMarker = "postpulse-accurate-ranking-v2";
 const duplicateFilterMarker = "postpulse-best-duplicate-v2";
+const columnResizeMarker = "postpulse-column-resize-v1";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -84,6 +85,9 @@ const [
   cssHasVisibilityRule,
   cssHasRankingControls,
   cssHasDuplicateFilter,
+  clientHasColumnResize,
+  serverHasColumnResize,
+  cssHasColumnResize,
 ] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
@@ -96,6 +100,9 @@ const [
     anyFileContains(cssFiles, "data-bar-labels-visible"),
     anyFileContains(cssFiles, "ranking-metric-menu"),
     anyFileContains(cssFiles, "duplicate-title-toggle"),
+    anyFileContains(clientJavaScript, columnResizeMarker),
+    anyFileContains(serverJavaScript, columnResizeMarker),
+    anyFileContains(cssFiles, "column-resizer"),
   ]);
 
 if (!clientHasMarker) {
@@ -119,9 +126,15 @@ if (!cssHasRankingControls) {
 if (!cssHasDuplicateFilter) {
   fail("the compiled CSS is missing the duplicate-title control.");
 }
+if (!clientHasColumnResize || !serverHasColumnResize) {
+  fail("the compiled bundle is missing redistributed column resizing.");
+}
+if (!cssHasColumnResize) {
+  fail("the compiled CSS is missing accessible column resize handles.");
+}
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with best-copy deduplication, overlap-safe ranking, clicks, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with resizable saved columns, best-copy deduplication, overlap-safe ranking, clicks, and final bar-label behavior.",
 );
