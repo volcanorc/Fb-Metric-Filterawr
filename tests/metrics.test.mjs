@@ -24,16 +24,20 @@ import {
   getDisplayedRowNumber,
   getDateBounds,
   getDuplicateTitleKey,
+  getMetricRangeError,
   getResultSortRule,
+  isActiveMetricRange,
   isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
+  parsePublishTime,
   normalizeRankingMetrics,
   orderPosts,
   reconcileChartMetricTransition,
   resetAdjacentTableColumns,
   resizeCascadingTableColumns,
   resolveChartDatum,
+  runDashboardAnalysis,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
   shouldRenderSettledBarValueLabels,
@@ -1525,4 +1529,343 @@ test("search still matches hashtags in the original CSV title", () => {
     ranges: {},
   });
   assert.equal(filtered.length, 1);
+});
+
+test("strictly rejects impossible Facebook and ISO calendar dates", () => {
+  assert.equal(parsePublishTime("02/29/2025 12:00"), null);
+  assert.equal(parsePublishTime("02/31/2026"), null);
+  assert.equal(parsePublishTime("13/01/2026"), null);
+  assert.equal(parsePublishTime("07/20/2026 24:00"), null);
+  assert.equal(parsePublishTime("2026-02-30"), null);
+  assert.equal(parsePublishTime("2026-07-20T12:60:00Z"), null);
+  assert.ok(Number.isFinite(parsePublishTime("02/29/2024 23:59:59")));
+  assert.equal(
+    parsePublishTime("2026-07-20T12:30:00Z"),
+    Date.parse("2026-07-20T12:30:00Z"),
+  );
+  assert.equal(isCustomDateRangeValid("2026-02-30", "2026-03-01"), false);
+
+  const csv = `"Post ID","Page name","Publish time",Views,Reach,Reactions,Comments,Shares
+valid,Example,"02/28/2026 12:00",1,1,1,0,0
+rolled-day,Example,"02/31/2026 12:00",1,1,1,0,0
+rolled-month,Example,"13/01/2026 12:00",1,1,1,0,0`;
+  const parsed = parseFacebookCsv(csv);
+  assert.deepEqual(parsed.posts.map(({ postId }) => postId), ["valid"]);
+  assert.equal(parsed.skippedRows, 2);
+});
+
+test("validates ranges and applies only valid inclusive bounds", () => {
+  assert.equal(
+    getMetricRangeError("views", { min: -1 }),
+    "Values cannot be negative.",
+  );
+  assert.equal(
+    getMetricRangeError("views", { min: 1.5 }),
+    "Use whole numbers for count metrics.",
+  );
+  assert.equal(
+    getMetricRangeError("views", { min: 20, max: 10 }),
+    "Minimum cannot be greater than maximum.",
+  );
+  assert.equal(getMetricRangeError("engagementRate", { min: 1.5 }), null);
+  assert.equal(isActiveMetricRange("views", { min: 100 }), true);
+  assert.equal(isActiveMetricRange("views", { min: 20, max: 10 }), false);
+
+  const posts = parseFacebookCsv(SAMPLE_CSV).posts;
+  const filters = {
+    search: "",
+    datePreset: "30d",
+    customStart: "",
+    customEnd: "",
+    pageName: "",
+    postType: "",
+    ranges: { views: { min: 106, max: 611 } },
+  };
+  assert.deepEqual(
+    filterPosts(posts, filters).map(({ views }) => views),
+    [106, 611],
+  );
+  assert.equal(
+    filterPosts(posts, {
+      ...filters,
+      ranges: { views: { min: 700, max: 100 } },
+    }).length,
+    3,
+    "an invalid live range is ignored until corrected",
+  );
+
+  const zeroReach = {
+    ...posts[0],
+    postId: "zero-reach",
+    reach: 0,
+    engagementRate: null,
+  };
+  assert.equal(
+    filterPosts([...posts, zeroReach], {
+      ...filters,
+      ranges: { engagementRate: { min: 0 } },
+    }).some(({ postId }) => postId === "zero-reach"),
+    false,
+  );
+});
+
+test("runs all downstream results through one shared analysis pipeline", () => {
+  const posts = parseFacebookCsv(SAMPLE_CSV).posts;
+  const result = runDashboardAnalysis(
+    posts,
+    {
+      search: "",
+      datePreset: "30d",
+      customStart: "",
+      customEnd: "",
+      pageName: "",
+      postType: "",
+      ranges: { views: { min: 81, max: 611 } },
+    },
+    "include",
+    { performanceOrder: "best", dateOrder: "none" },
+    ["views"],
+    "post",
+  );
+
+  assert.equal(result.baseFilteredPosts.length, 3);
+  assert.equal(result.filteredPosts.length, 3);
+  assert.equal(result.matchedCount, 3);
+  assert.equal(result.totals.views, 798);
+  assert.deepEqual(
+    result.orderedPosts.map(({ postId }) => postId),
+    result.chartData.map(({ posts: [post] }) => post.postId),
+  );
+  assert.deepEqual(result.extremes.views, { min: 81, max: 611 });
+  assert.equal(
+    result.chartData.reduce((sum, datum) => sum + datum.views, 0),
+    result.totals.views,
+  );
+});
+
+function seededRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function referencePerformance(items, requestedMetrics) {
+  const selected = requestedMetrics.length
+    ? requestedMetrics
+    : ["views", "reach", "engagement"];
+  const informative = selected.filter((key) =>
+    items.some((item) => item[key] > 0),
+  );
+  if (!informative.length) {
+    return items.map(() => ({ primary: 0, tieBreaker: 0 }));
+  }
+  const maxima = Object.fromEntries(
+    informative.map((key) => [
+      key,
+      items.reduce((maximum, item) => Math.max(maximum, item[key]), 0),
+    ]),
+  );
+  return items.map((item) => {
+    const normalized = informative.map((key) => item[key] / maxima[key]);
+    const tieBreaker =
+      (normalized.reduce((sum, value) => sum + value, 0) /
+        normalized.length) *
+      100;
+    return {
+      primary: normalized.includes(0)
+        ? 0
+        : Math.exp(
+            normalized.reduce((sum, value) => sum + Math.log(value), 0) /
+              normalized.length,
+          ) * 100,
+      tieBreaker,
+    };
+  });
+}
+
+function referenceOrder(items, ordering, metrics) {
+  if (
+    ordering.performanceOrder === "none" &&
+    ordering.dateOrder === "none"
+  ) {
+    return [...items];
+  }
+  const scores =
+    ordering.performanceOrder === "none"
+      ? items.map(() => ({ primary: 0, tieBreaker: 0 }))
+      : referencePerformance(items, metrics);
+  const performanceDirection =
+    ordering.performanceOrder === "lowest" ? 1 : -1;
+  const dateDirection = ordering.dateOrder === "oldest" ? 1 : -1;
+  const monthIndex = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.getFullYear() * 12 + date.getMonth();
+  };
+  return items
+    .map((item, sourceIndex) => ({
+      item,
+      sourceIndex,
+      score: scores[sourceIndex],
+    }))
+    .sort((left, right) => {
+      if (
+        ordering.performanceOrder !== "none" &&
+        ordering.dateOrder !== "none"
+      ) {
+        const month =
+          (monthIndex(left.item.publishedAt) -
+            monthIndex(right.item.publishedAt)) *
+          dateDirection;
+        if (month) return month;
+      } else if (ordering.dateOrder !== "none") {
+        const date =
+          (left.item.publishedAt - right.item.publishedAt) * dateDirection;
+        if (date) return date;
+      }
+      if (ordering.performanceOrder !== "none") {
+        const primary =
+          (left.score.primary - right.score.primary) * performanceDirection;
+        if (primary) return primary;
+        const tie =
+          (left.score.tieBreaker - right.score.tieBreaker) *
+          performanceDirection;
+        if (tie) return tie;
+      }
+      if (
+        ordering.performanceOrder !== "none" &&
+        ordering.dateOrder !== "none"
+      ) {
+        const date =
+          (left.item.publishedAt - right.item.publishedAt) * dateDirection;
+        if (date) return date;
+      }
+      return left.sourceIndex - right.sourceIndex;
+    })
+    .map(({ item }) => item);
+}
+
+test("matches an independent seeded oracle for every ordering combination", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const performanceOrders = ["none", "best", "lowest"];
+  const dateOrders = ["none", "newest", "oldest"];
+  const metricSets = [
+    [],
+    ["views"],
+    ["views", "reach"],
+    ["comments", "shares"],
+    ["totalClicks"],
+  ];
+
+  for (let seed = 1; seed <= 30; seed += 1) {
+    const random = seededRandom(seed);
+    const posts = Array.from({ length: 24 }, (_, index) => {
+      const reactions = Math.floor(random() * 80);
+      const comments = Math.floor(random() * 25);
+      const shares = Math.floor(random() * 35);
+      return {
+        ...base,
+        postId: `seed-${seed}-${index}`,
+        publishedAt: new Date(
+          2026,
+          Math.floor(random() * 6),
+          1 + Math.floor(random() * 28),
+          Math.floor(random() * 24),
+        ).getTime(),
+        views: Math.floor(random() * 1200),
+        reach: Math.floor(random() * 900),
+        reactions,
+        comments,
+        shares,
+        engagement: reactions + comments + shares,
+        totalClicks: Math.floor(random() * 160),
+      };
+    });
+    for (const performanceOrder of performanceOrders) {
+      for (const dateOrder of dateOrders) {
+        for (const metrics of metricSets) {
+          const ordering = { performanceOrder, dateOrder };
+          assert.deepEqual(
+            orderPosts(posts, ordering, metrics).map(({ postId }) => postId),
+            referenceOrder(posts, ordering, metrics).map(
+              ({ postId }) => postId,
+            ),
+            `seed ${seed}: ${performanceOrder}/${dateOrder}/${metrics.join("+") || "auto"}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+test("matches an independent filter oracle across generated intersections", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  for (let seed = 101; seed <= 140; seed += 1) {
+    const random = seededRandom(seed);
+    const posts = Array.from({ length: 40 }, (_, index) => {
+      const reactions = Math.floor(random() * 30);
+      const comments = Math.floor(random() * 12);
+      const shares = Math.floor(random() * 15);
+      const reach = index % 13 === 0 ? 0 : Math.floor(random() * 500);
+      const engagement = reactions + comments + shares;
+      return {
+        ...base,
+        postId: `filter-${seed}-${index}`,
+        pageId: index % 2 ? "page-b" : "page-a",
+        pageName: index % 2 ? "North Page" : "South Page",
+        postType: index % 3 ? "Photos" : "Videos",
+        title: `${index % 4 === 0 ? "Needle" : "Ordinary"} post ${index} #tag`,
+        publishedAt: new Date(
+          2026,
+          5,
+          1 + (index % 28),
+          index % 24,
+        ).getTime(),
+        views: Math.floor(random() * 700),
+        reach,
+        reactions,
+        comments,
+        shares,
+        engagement,
+        engagementRate: reach > 0 ? (engagement / reach) * 100 : null,
+      };
+    });
+    const filters = {
+      search: "needle",
+      datePreset: "custom",
+      customStart: "2026-06-05",
+      customEnd: "2026-06-24",
+      pageName: seed % 2 ? "South Page" : "",
+      postType: seed % 3 ? "Photos" : "",
+      ranges: {
+        views: { min: 100, max: 550 },
+        comments: { min: 2, max: 10 },
+        engagementRate: { min: 1.5 },
+      },
+    };
+    const start = new Date(2026, 5, 5, 0, 0, 0, 0).getTime();
+    const end = new Date(2026, 5, 24, 23, 59, 59, 999).getTime();
+    const expected = posts.filter(
+      (post) =>
+        post.publishedAt >= start &&
+        post.publishedAt <= end &&
+        `${post.title} ${post.pageName} ${post.postType}`
+          .toLowerCase()
+          .includes("needle") &&
+        (!filters.pageName || post.pageName === filters.pageName) &&
+        (!filters.postType || post.postType === filters.postType) &&
+        post.views >= 100 &&
+        post.views <= 550 &&
+        post.comments >= 2 &&
+        post.comments <= 10 &&
+        post.engagementRate !== null &&
+        post.engagementRate >= 1.5,
+    );
+    assert.deepEqual(
+      filterPosts(posts, filters).map(({ postId }) => postId),
+      expected.map(({ postId }) => postId),
+      `filter seed ${seed}`,
+    );
+  }
 });

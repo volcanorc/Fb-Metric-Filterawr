@@ -109,12 +109,8 @@ import {
   TABLE_ROW_COMPACT_THRESHOLD,
   TABLE_ROW_DEFAULT_HEIGHT,
   TABLE_ROW_MIN_HEIGHT,
-  applyDuplicateTitleMode,
-  buildChartData,
-  calculateTotals,
   clampTableRowHeight,
   completeChartMetricExit,
-  filterPosts,
   fitTableColumnWidths,
   formatCount,
   formatBarValueLabel,
@@ -125,15 +121,17 @@ import {
   getMetricValue,
   getChartDataSignature,
   getDisplayedRowNumber,
+  getMetricRangeError,
   getPostHeadline,
+  isActiveMetricRange,
   isCustomDateRangeValid,
-  orderPosts,
   parseDashboardPreferences,
   parseFacebookCsv,
   reconcileChartMetricTransition,
   resetAdjacentTableColumns,
   resizeCascadingTableColumns,
   resolveChartDatum,
+  runDashboardAnalysis,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
   shouldRenderSettledBarValueLabels,
@@ -1171,39 +1169,37 @@ export default function Home() {
 
   const posts = dataset.posts;
   const hasDataset = posts.length > 0;
-  const baseFilteredPosts = useMemo(
-    () => filterPosts(posts, filters),
-    [posts, filters],
-  );
   const resultOrdering = useMemo(
     () => ({ performanceOrder, dateOrder }),
     [dateOrder, performanceOrder],
   );
-  const duplicateTitleResult = useMemo(
+  const analysis = useMemo(
     () =>
-      applyDuplicateTitleMode(
-        baseFilteredPosts,
+      runDashboardAnalysis(
+        posts,
+        filters,
         duplicateTitleMode,
-        rankingMetrics,
-      ),
-    [baseFilteredPosts, duplicateTitleMode, rankingMetrics],
-  );
-  const filteredPosts = duplicateTitleResult.posts;
-  const sortedPosts = useMemo(
-    () => orderPosts(filteredPosts, resultOrdering, rankingMetrics),
-    [filteredPosts, rankingMetrics, resultOrdering],
-  );
-  const totals = useMemo(() => calculateTotals(filteredPosts), [filteredPosts]);
-  const chartData = useMemo(
-    () =>
-      buildChartData(
-        filteredPosts,
-        chartGrouping,
         resultOrdering,
         rankingMetrics,
+        chartGrouping,
       ),
-    [chartGrouping, filteredPosts, rankingMetrics, resultOrdering],
+    [
+      chartGrouping,
+      duplicateTitleMode,
+      filters,
+      posts,
+      rankingMetrics,
+      resultOrdering,
+    ],
   );
+  const {
+    baseFilteredPosts,
+    filteredPosts,
+    orderedPosts: sortedPosts,
+    totals,
+    extremes,
+    chartData,
+  } = analysis;
   const pages = useMemo(
     () => [...new Set(posts.map((post) => post.pageName))].sort(),
     [posts],
@@ -1212,23 +1208,6 @@ export default function Home() {
     () => [...new Set(posts.map((post) => post.postType))].sort(),
     [posts],
   );
-  const extremes = useMemo(() => {
-    return Object.fromEntries(
-      tableMetricDefinitions.map(({ key }) => {
-        const values = filteredPosts
-          .map((post) => getMetricValue(post, key))
-          .filter((value): value is number => value !== null);
-        return [
-          key,
-          {
-            min: values.length ? Math.min(...values) : 0,
-            max: values.length ? Math.max(...values) : 0,
-          },
-        ];
-      }),
-    ) as Record<TableMetricKey, { min: number; max: number }>;
-  }, [filteredPosts]);
-
   const copyPostTitle = useCallback(async (post: PostMetric) => {
     const cleanTitle = stripHashtagWords(post.title) || "Untitled post";
     try {
@@ -1648,9 +1627,11 @@ export default function Home() {
     table.setPageIndex(0);
   }, [duplicateTitleMode, fileName, filters, table]);
 
-  const activeRangeCount = Object.values(filters.ranges).filter(
-    (range) => range?.min !== undefined || range?.max !== undefined,
-  ).length;
+  const activeRangeCount = (
+    Object.entries(filters.ranges) as Array<
+      [TableMetricKey, NumericRange | undefined]
+    >
+  ).filter(([key, range]) => isActiveMetricRange(key, range)).length;
   const activeFilterCount =
     activeRangeCount +
     Number(Boolean(filters.pageName)) +
@@ -1934,6 +1915,7 @@ export default function Home() {
             className="analysis-toolbar"
             aria-label="Post analysis controls"
             data-ordering-model="postpulse-independent-ordering-v1"
+            data-filter-pipeline="postpulse-filter-pipeline-v1"
           >
             <label className="search-control">
               <span className="sr-only">Search posts</span>
@@ -2135,6 +2117,7 @@ export default function Home() {
               onClick={openSettings}
               aria-haspopup="dialog"
               aria-expanded={settingsOpen}
+              data-testid="open-settings"
             >
               <SlidersHorizontal size={16} />
               Settings
@@ -2145,107 +2128,16 @@ export default function Home() {
             <button
               className="button button-ghost reset-button"
               onClick={resetFilters}
+              data-testid="reset-analysis"
             >
               <RotateCcw size={15} /> Reset
             </button>
           </div>
 
-          <div className="control-bar utility-control-bar" hidden>
-            <label className="search-control">
-              <span className="sr-only">Search posts</span>
-              <Search size={16} />
-              <input
-                value={filters.search}
-                onChange={(event) =>
-                  setFilters((current) => ({
-                    ...current,
-                    search: event.target.value,
-                  }))
-                }
-                placeholder="Search posts or page…"
-                data-testid="search-posts-obsolete"
-              />
-            </label>
-
-            {view !== "table" ? (
-              <label className="select-control group-control">
-                <span>Group</span>
-                <select
-                  value={chartGrouping}
-                  onChange={(event) =>
-                    setChartGrouping(event.target.value as ChartGrouping)
-                  }
-                  aria-label="Chart grouping"
-                >
-                  <option value="post">Every post</option>
-                  <option value="day">Day</option>
-                  <option value="week">Week</option>
-                  <option value="month">Month</option>
-                </select>
-              </label>
-            ) : null}
-
-            <button
-              className="button button-secondary filter-button"
-              onClick={openSettings}
-              aria-expanded={settingsOpen}
-            >
-              <SlidersHorizontal size={16} />
-              Filters
-              {activeFilterCount ? (
-                <span className="filter-count">{activeFilterCount}</span>
-              ) : null}
-            </button>
-
-            <button
-              className="button button-ghost reset-button"
-              onClick={resetFilters}
-            >
-              <RotateCcw size={15} /> Reset filters
-            </button>
-          </div>
-
-          {filters.datePreset === "custom" ? (
-            <div className="custom-date-row" hidden>
-              <label>
-                From
-                <input
-                  type="date"
-                  value={filters.customStart}
-                  max={filters.customEnd || undefined}
-                  onChange={(event) =>
-                    setFilters((current) => ({
-                      ...current,
-                      customStart: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <label>
-                To
-                <input
-                  type="date"
-                  value={filters.customEnd}
-                  min={filters.customStart || undefined}
-                  onChange={(event) =>
-                    setFilters((current) => ({
-                      ...current,
-                      customEnd: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-              <span className={customDateValid ? "" : "date-range-error"}>
-                {customDateValid
-                  ? "Custom dates include the full selected days."
-                  : "The end date must be on or after the start date."}
-              </span>
-            </div>
-          ) : null}
-
           <dialog
             ref={settingsDialogRef}
             className="settings-dialog"
+            data-testid="settings-dialog"
             aria-labelledby="settings-dialog-title"
             data-settings-modal="postpulse-settings-dialog-v1"
             onClick={(event) => {
@@ -2440,8 +2332,14 @@ export default function Home() {
                       <span>Leave a field blank for no limit.</span>
                     </div>
                     <div className="range-grid">
-                      {tableMetricDefinitions.map(({ key, label }) => (
-                        <div className="range-row" key={key}>
+                      {tableMetricDefinitions.map(({ key, label }) => {
+                        const range = filters.ranges[key];
+                        const rangeError = getMetricRangeError(key, range);
+                        return (
+                          <div
+                          className={`range-row ${rangeError ? "range-row-invalid" : ""}`}
+                          key={key}
+                        >
                           <span>{label}</span>
                           <label>
                             <span className="sr-only">Minimum {label}</span>
@@ -2450,7 +2348,12 @@ export default function Home() {
                               min="0"
                               step={key === "engagementRate" ? "0.1" : "1"}
                               placeholder="Min"
-                              value={filters.ranges[key]?.min ?? ""}
+                              value={range?.min ?? ""}
+                              max={range?.max}
+                              aria-invalid={Boolean(rangeError)}
+                              aria-describedby={
+                                rangeError ? `range-error-${key}` : undefined
+                              }
                               onChange={(event) =>
                                 updateRange(key, "min", event.target.value)
                               }
@@ -2461,17 +2364,31 @@ export default function Home() {
                             <span className="sr-only">Maximum {label}</span>
                             <input
                               type="number"
-                              min="0"
+                              min={range?.min ?? 0}
                               step={key === "engagementRate" ? "0.1" : "1"}
                               placeholder="Max"
-                              value={filters.ranges[key]?.max ?? ""}
+                              value={range?.max ?? ""}
+                              aria-invalid={Boolean(rangeError)}
+                              aria-describedby={
+                                rangeError ? `range-error-${key}` : undefined
+                              }
                               onChange={(event) =>
                                 updateRange(key, "max", event.target.value)
                               }
                             />
                           </label>
-                        </div>
-                      ))}
+                          {rangeError ? (
+                            <small
+                              className="range-row-error"
+                              id={`range-error-${key}`}
+                              role="alert"
+                            >
+                              {rangeError}
+                            </small>
+                          ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ) : null}
@@ -2520,9 +2437,9 @@ export default function Home() {
               </span>
               {duplicateTitleMode === "exclude" ? (
                 <span className="duplicate-title-feedback" role="status">
-                  {duplicateTitleResult.hiddenCount
-                    ? `${formatCount(duplicateTitleResult.hiddenCount)} ${
-                        duplicateTitleResult.hiddenCount === 1
+                  {analysis.duplicateHiddenCount
+                    ? `${formatCount(analysis.duplicateHiddenCount)} ${
+                        analysis.duplicateHiddenCount === 1
                           ? "duplicate post"
                           : "duplicate posts"
                       } hidden · best-performing copy retained`

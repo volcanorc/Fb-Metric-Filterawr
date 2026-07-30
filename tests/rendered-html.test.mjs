@@ -81,6 +81,25 @@ test("ships compact row controls, independent ordering, and the Settings modal",
   assert.match(css, /\.table-frame\.is-compact-rows \.post-page/);
 });
 
+test("ships exactly one analysis toolbar without obsolete duplicate controls", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const count = (pattern) => page.match(pattern)?.length ?? 0;
+
+  assert.equal(count(/data-testid="search-posts"/g), 1);
+  assert.equal(count(/data-testid="open-settings"/g), 1);
+  assert.equal(count(/data-testid="reset-analysis"/g), 1);
+  assert.equal(count(/data-testid="settings-dialog"/g), 1);
+  assert.equal(count(/className="custom-date-popover"/g), 1);
+  assert.equal(count(/aria-label="Chart grouping"/g), 1);
+  assert.doesNotMatch(page, /search-posts-obsolete/);
+  assert.doesNotMatch(page, /utility-control-bar/);
+  assert.doesNotMatch(page, /custom-date-row/);
+  assert.doesNotMatch(page, />\s*Filters\s*</);
+});
+
 test("keeps row resize handles inside a vertically locked non-scrollable table", async () => {
   const css = await readFile(
     new URL("../app/globals.css", import.meta.url),

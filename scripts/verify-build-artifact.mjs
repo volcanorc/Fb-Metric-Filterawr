@@ -10,6 +10,7 @@ const settingsModalMarker = "postpulse-settings-dialog-v1";
 const duplicateFilterMarker = "postpulse-best-duplicate-v2";
 const columnResizeMarker = "postpulse-cascading-column-resize-v3";
 const rowResizeMarker = "postpulse-row-resize-v1";
+const filterPipelineMarker = "postpulse-filter-pipeline-v1";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -101,6 +102,10 @@ const [
   serverHasPriorityCopy,
   cssHasVerticalOverflowLock,
   cssHasCompactMetricGap,
+  clientHasFilterPipeline,
+  serverHasFilterPipeline,
+  clientHasObsoleteToolbar,
+  serverHasObsoleteToolbar,
 ] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
@@ -127,6 +132,10 @@ const [
     anyFileContains(serverJavaScript, "Priority metrics"),
     anyFileContains(cssFiles, "overflow:auto hidden"),
     anyFileContains(cssFiles, "grid-template-columns:42px minmax(42px,1fr)"),
+    anyFileContains(clientJavaScript, filterPipelineMarker),
+    anyFileContains(serverJavaScript, filterPipelineMarker),
+    anyFileContains(clientJavaScript, "search-posts-obsolete"),
+    anyFileContains(serverJavaScript, "search-posts-obsolete"),
   ]);
 
 if (!clientHasMarker) {
@@ -174,9 +183,15 @@ if (!cssHasVerticalOverflowLock) {
 if (!cssHasCompactMetricGap) {
   fail("the compiled CSS is missing the compact metric value layout.");
 }
+if (!clientHasFilterPipeline || !serverHasFilterPipeline) {
+  fail("the compiled bundle is missing the shared filter analysis pipeline.");
+}
+if (clientHasObsoleteToolbar || serverHasObsoleteToolbar) {
+  fail("the compiled bundle still contains the obsolete duplicate toolbar.");
+}
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with V8 ordering, native Settings modal, cascading saved columns, compact rows, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with the shared filter pipeline, one analysis toolbar, V8 ordering, saved table sizing, and final bar-label behavior.",
 );

@@ -113,6 +113,22 @@ export interface FilterState {
   ranges: Partial<Record<TableMetricKey, NumericRange>>;
 }
 
+export interface MetricExtremes {
+  min: number;
+  max: number;
+}
+
+export interface DashboardAnalysisResult {
+  baseFilteredPosts: PostMetric[];
+  filteredPosts: PostMetric[];
+  orderedPosts: PostMetric[];
+  duplicateHiddenCount: number;
+  matchedCount: number;
+  totals: MetricTotals;
+  extremes: Record<TableMetricKey, MetricExtremes>;
+  chartData: ChartDatum[];
+}
+
 export interface MetricTotals {
   posts: number;
   views: number;
@@ -1114,29 +1130,135 @@ function readNumber(
   return Math.max(0, numeric);
 }
 
+interface CalendarParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  millisecond: number;
+}
+
+function areValidCalendarParts(parts: CalendarParts): boolean {
+  if (
+    !Number.isInteger(parts.year) ||
+    !Number.isInteger(parts.month) ||
+    !Number.isInteger(parts.day) ||
+    !Number.isInteger(parts.hour) ||
+    !Number.isInteger(parts.minute) ||
+    !Number.isInteger(parts.second) ||
+    !Number.isInteger(parts.millisecond) ||
+    parts.month < 1 ||
+    parts.month > 12 ||
+    parts.day < 1 ||
+    parts.hour < 0 ||
+    parts.hour > 23 ||
+    parts.minute < 0 ||
+    parts.minute > 59 ||
+    parts.second < 0 ||
+    parts.second > 59 ||
+    parts.millisecond < 0 ||
+    parts.millisecond > 999
+  ) {
+    return false;
+  }
+  const daysInMonth = new Date(parts.year, parts.month, 0).getDate();
+  return parts.day <= daysInMonth;
+}
+
+function createStrictLocalTimestamp(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+  millisecond = 0,
+): number | null {
+  const parts = { year, month, day, hour, minute, second, millisecond };
+  if (!areValidCalendarParts(parts)) return null;
+  return new Date(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second,
+    millisecond,
+  ).getTime();
+}
+
 export function parsePublishTime(value: string | undefined): number | null {
   if (!value) return null;
-  const match = value
-    .trim()
-    .match(
-      /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
-    );
-  if (match) {
+  const trimmed = value.trim();
+  const facebookMatch = trimmed.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+  );
+  if (facebookMatch) {
     const [, month, day, year, hour = "0", minute = "0", second = "0"] =
-      match;
-    const date = new Date(
+      facebookMatch;
+    return createStrictLocalTimestamp(
       Number(year),
-      Number(month) - 1,
+      Number(month),
       Number(day),
       Number(hour),
       Number(minute),
       Number(second),
     );
-    return Number.isNaN(date.getTime()) ? null : date.getTime();
   }
 
-  const fallback = new Date(value);
-  return Number.isNaN(fallback.getTime()) ? null : fallback.getTime();
+  const isoMatch = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:(?:T|\s)(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?$/,
+  );
+  if (!isoMatch) return null;
+  const [
+    ,
+    year,
+    month,
+    day,
+    hour = "0",
+    minute = "0",
+    second = "0",
+    millisecond = "0",
+    zone,
+  ] = isoMatch;
+  const numericParts = {
+    year: Number(year),
+    month: Number(month),
+    day: Number(day),
+    hour: Number(hour),
+    minute: Number(minute),
+    second: Number(second),
+    millisecond: Number(millisecond.padEnd(3, "0")),
+  };
+  if (!areValidCalendarParts(numericParts)) return null;
+
+  if (!zone) {
+    const date = new Date(
+      numericParts.year,
+      numericParts.month - 1,
+      numericParts.day,
+      numericParts.hour,
+      numericParts.minute,
+      numericParts.second,
+      numericParts.millisecond,
+    );
+    return date.getTime();
+  }
+  if (zone !== "Z") {
+    const [, offsetHour, offsetMinute] =
+      zone.match(/^[+-](\d{2}):?(\d{2})$/) ?? [];
+    if (
+      offsetHour === undefined ||
+      Number(offsetHour) > 23 ||
+      Number(offsetMinute) > 59
+    ) {
+      return null;
+    }
+  }
+  const timestamp = Date.parse(trimmed);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 export function parseFacebookCsv(csv: string): CsvParseResult {
@@ -1278,6 +1400,18 @@ function endOfDay(timestamp: number): Date {
   return date;
 }
 
+function parseCustomDate(value: string, end: boolean): number | null {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const timestamp = createStrictLocalTimestamp(
+    Number(match[1]),
+    Number(match[2]),
+    Number(match[3]),
+  );
+  if (timestamp === null) return null;
+  return (end ? endOfDay(timestamp) : startOfDay(timestamp)).getTime();
+}
+
 function subtractCalendarMonths(date: Date, months: number): void {
   const day = date.getDate();
   date.setDate(1);
@@ -1302,12 +1436,19 @@ export function getDateBounds(
   const start = startOfDay(latest);
 
   if (preset === "custom") {
-    const parsedStart = customStart
-      ? startOfDay(new Date(`${customStart}T00:00:00`).getTime()).getTime()
-      : Number.NEGATIVE_INFINITY;
-    const parsedEnd = customEnd
-      ? endOfDay(new Date(`${customEnd}T00:00:00`).getTime()).getTime()
-      : Number.POSITIVE_INFINITY;
+    const strictStart = customStart ? parseCustomDate(customStart, false) : null;
+    const strictEnd = customEnd ? parseCustomDate(customEnd, true) : null;
+    if (
+      (customStart && strictStart === null) ||
+      (customEnd && strictEnd === null)
+    ) {
+      return {
+        start: Number.POSITIVE_INFINITY,
+        end: Number.NEGATIVE_INFINITY,
+      };
+    }
+    const parsedStart = strictStart ?? Number.NEGATIVE_INFINITY;
+    const parsedEnd = strictEnd ?? Number.POSITIVE_INFINITY;
     if (parsedStart > parsedEnd) {
       return {
         start: Number.POSITIVE_INFINITY,
@@ -1328,10 +1469,53 @@ export function isCustomDateRangeValid(
   customStart: string,
   customEnd: string,
 ): boolean {
-  if (!customStart || !customEnd) return true;
-  return (
-    new Date(`${customStart}T00:00:00`).getTime() <=
-    new Date(`${customEnd}T00:00:00`).getTime()
+  const start = customStart ? parseCustomDate(customStart, false) : null;
+  const end = customEnd ? parseCustomDate(customEnd, true) : null;
+  if ((customStart && start === null) || (customEnd && end === null)) {
+    return false;
+  }
+  return start === null || end === null || start <= end;
+}
+
+export function getMetricRangeError(
+  key: TableMetricKey,
+  range: NumericRange | undefined,
+): string | null {
+  if (!range) return null;
+  const values = [range.min, range.max].filter(
+    (value): value is number => value !== undefined,
+  );
+  if (!values.length) return null;
+  if (values.some((value) => !Number.isFinite(value))) {
+    return "Enter a finite number.";
+  }
+  if (values.some((value) => value < 0)) {
+    return "Values cannot be negative.";
+  }
+  if (
+    key !== "engagementRate" &&
+    values.some((value) => !Number.isInteger(value))
+  ) {
+    return "Use whole numbers for count metrics.";
+  }
+  if (
+    range.min !== undefined &&
+    range.max !== undefined &&
+    range.min > range.max
+  ) {
+    return "Minimum cannot be greater than maximum.";
+  }
+  return null;
+}
+
+export function isActiveMetricRange(
+  key: TableMetricKey,
+  range: NumericRange | undefined,
+): boolean {
+  return Boolean(
+    range &&
+      getMetricRangeError(key, range) === null &&
+      (range.min !== undefined || range.max !== undefined),
   );
 }
 
@@ -1368,6 +1552,7 @@ export function filterPosts(
     for (const [key, range] of Object.entries(filters.ranges) as Array<
       [TableMetricKey, NumericRange]
     >) {
+      if (!isActiveMetricRange(key, range)) continue;
       const value = getMetricValue(post, key);
       if (value === null) {
         if (range.min !== undefined || range.max !== undefined) return false;
@@ -1879,6 +2064,54 @@ export function buildChartData(
       ? sortChartData(data, ordering, selectedMetrics)
       : orderChartData(data, ordering, selectedMetrics),
   );
+}
+
+export function runDashboardAnalysis(
+  posts: PostMetric[],
+  filters: FilterState,
+  duplicateMode: DuplicateTitleMode,
+  ordering: ResultOrdering,
+  selectedMetrics: readonly RankingMetricKey[],
+  grouping: ChartGrouping,
+): DashboardAnalysisResult {
+  const baseFilteredPosts = filterPosts(posts, filters);
+  const duplicateResult = applyDuplicateTitleMode(
+    baseFilteredPosts,
+    duplicateMode,
+    selectedMetrics,
+  );
+  const filteredPosts = duplicateResult.posts;
+  const orderedPosts = orderPosts(filteredPosts, ordering, selectedMetrics);
+  const extremes = Object.fromEntries(
+    tableMetricDefinitions.map(({ key }) => {
+      const values = filteredPosts
+        .map((post) => getMetricValue(post, key))
+        .filter((value): value is number => value !== null);
+      return [
+        key,
+        {
+          min: values.length ? Math.min(...values) : 0,
+          max: values.length ? Math.max(...values) : 0,
+        },
+      ];
+    }),
+  ) as Record<TableMetricKey, MetricExtremes>;
+
+  return {
+    baseFilteredPosts,
+    filteredPosts,
+    orderedPosts,
+    duplicateHiddenCount: duplicateResult.hiddenCount,
+    matchedCount: filteredPosts.length,
+    totals: calculateTotals(filteredPosts),
+    extremes,
+    chartData: buildChartData(
+      filteredPosts,
+      grouping,
+      ordering,
+      selectedMetrics,
+    ),
+  };
 }
 
 export function getChartDataSignature(data: ChartDatum[]): string {
