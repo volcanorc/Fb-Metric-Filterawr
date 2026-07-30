@@ -7,7 +7,8 @@ const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
 const rankingMarker = "postpulse-accurate-ranking-v2";
 const duplicateFilterMarker = "postpulse-best-duplicate-v2";
-const columnResizeMarker = "postpulse-column-resize-v1";
+const columnResizeMarker = "postpulse-adjacent-column-resize-v2";
+const rowResizeMarker = "postpulse-row-resize-v1";
 const relevantSources = [
   "app/page.tsx",
   "app/metrics.ts",
@@ -88,6 +89,12 @@ const [
   clientHasColumnResize,
   serverHasColumnResize,
   cssHasColumnResize,
+  clientHasRowResize,
+  serverHasRowResize,
+  cssHasRowResize,
+  cssHasFilterAttention,
+  clientHasPriorityCopy,
+  serverHasPriorityCopy,
 ] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
@@ -103,6 +110,12 @@ const [
     anyFileContains(clientJavaScript, columnResizeMarker),
     anyFileContains(serverJavaScript, columnResizeMarker),
     anyFileContains(cssFiles, "column-resizer"),
+    anyFileContains(clientJavaScript, rowResizeMarker),
+    anyFileContains(serverJavaScript, rowResizeMarker),
+    anyFileContains(cssFiles, "row-resizer"),
+    anyFileContains(cssFiles, "advanced-panel-attention"),
+    anyFileContains(clientJavaScript, "Priority metrics"),
+    anyFileContains(serverJavaScript, "Priority metrics"),
   ]);
 
 if (!clientHasMarker) {
@@ -127,14 +140,23 @@ if (!cssHasDuplicateFilter) {
   fail("the compiled CSS is missing the duplicate-title control.");
 }
 if (!clientHasColumnResize || !serverHasColumnResize) {
-  fail("the compiled bundle is missing redistributed column resizing.");
+  fail("the compiled bundle is missing adjacent-pair column resizing.");
 }
 if (!cssHasColumnResize) {
   fail("the compiled CSS is missing accessible column resize handles.");
+}
+if (!clientHasRowResize || !serverHasRowResize || !cssHasRowResize) {
+  fail("the compiled artifact is missing saved table row resizing.");
+}
+if (!cssHasFilterAttention) {
+  fail("the compiled CSS is missing the filter-panel attention cue.");
+}
+if (!clientHasPriorityCopy || !serverHasPriorityCopy) {
+  fail("the compiled bundle is missing the simplified priority copy.");
 }
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with resizable saved columns, best-copy deduplication, overlap-safe ranking, clicks, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with adjacent saved columns, compact rows, priority copy, best-copy deduplication, and final bar-label behavior.",
 );

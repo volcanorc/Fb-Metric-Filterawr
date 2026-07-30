@@ -6,18 +6,20 @@ import {
   RANKING_METRICS,
   TABLE_COLUMN_DEFAULT_WIDTHS,
   TABLE_COLUMN_MIN_WIDTHS,
+  TABLE_ROW_DEFAULT_HEIGHT,
+  TABLE_ROW_MIN_HEIGHT,
   applyDuplicateTitleMode,
   buildChartData,
   calculateBalancedPerformanceDetails,
   calculateBalancedPerformanceScores,
   calculateTotals,
+  clampTableRowHeight,
   completeChartMetricExit,
   filterPosts,
   fitTableColumnWidths,
   formatBarValueLabel,
   getChartDataSignature,
   getDisplayedRowNumber,
-  getDynamicColumnMaxWidth,
   getDateBounds,
   getDuplicateTitleKey,
   getResultSortRule,
@@ -26,7 +28,8 @@ import {
   parseFacebookCsv,
   normalizeRankingMetrics,
   reconcileChartMetricTransition,
-  redistributeTableColumnWidth,
+  resetAdjacentTableColumns,
+  resizeAdjacentTableColumns,
   resolveChartDatum,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
@@ -630,7 +633,7 @@ test("migrates V5 preferences with clicks ranking and independent visibility", (
     }),
   );
 
-  assert.equal(preferences.version, 6);
+  assert.equal(preferences.version, 7);
   assert.equal(preferences.view, "lines");
   assert.deepEqual(preferences.visibleMetrics, ["totalClicks"]);
   assert.deepEqual(preferences.rankingMetrics, [
@@ -643,6 +646,8 @@ test("migrates V5 preferences with clicks ranking and independent visibility", (
   assert.equal(preferences.pageSize, 50);
   assert.equal(preferences.showMetricQuickControls, true);
   assert.equal(preferences.tableInternalScroll, false);
+  assert.equal(preferences.tableRowResizeEnabled, false);
+  assert.equal(preferences.tableRowHeight, TABLE_ROW_DEFAULT_HEIGHT);
   assert.deepEqual(
     preferences.columnWidths,
     TABLE_COLUMN_DEFAULT_WIDTHS,
@@ -664,7 +669,7 @@ test("migrates V4 ranking preferences and removes aggregate overlap", () => {
     }),
   );
 
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
   assert.deepEqual(migrated.visibleMetrics, [
     "views",
     "engagement",
@@ -673,7 +678,7 @@ test("migrates V4 ranking preferences and removes aggregate overlap", () => {
   assert.deepEqual(migrated.rankingMetrics, ["views", "comments"]);
 });
 
-test("validates V6 column widths and clamps saved values to column minimums", () => {
+test("migrates V6 column widths and defaults the new row sizing controls", () => {
   const preferences = parseDashboardPreferences(
     JSON.stringify({
       version: 6,
@@ -695,7 +700,7 @@ test("validates V6 column widths and clamps saved values to column minimums", ()
     }),
   );
 
-  assert.equal(preferences.version, 6);
+  assert.equal(preferences.version, 7);
   assert.equal(preferences.columnWidths.post, 420);
   assert.equal(
     preferences.columnWidths.publishedAt,
@@ -707,6 +712,39 @@ test("validates V6 column widths and clamps saved values to column minimums", ()
     TABLE_COLUMN_DEFAULT_WIDTHS.reach,
   );
   assert.equal("madeUpColumn" in preferences.columnWidths, false);
+  assert.equal(preferences.tableRowResizeEnabled, false);
+  assert.equal(preferences.tableRowHeight, TABLE_ROW_DEFAULT_HEIGHT);
+});
+
+test("validates V7 row sizing preferences and clamps saved heights", () => {
+  const compact = parseDashboardPreferences(
+    JSON.stringify({
+      version: 7,
+      view: "table",
+      visibleMetrics: ["views"],
+      rankingMetrics: ["views"],
+      resultOrder: "performance-desc",
+      chartGrouping: "post",
+      pageSize: 25,
+      showMetricQuickControls: true,
+      tableInternalScroll: false,
+      columnWidths: TABLE_COLUMN_DEFAULT_WIDTHS,
+      tableRowResizeEnabled: true,
+      tableRowHeight: 10,
+    }),
+  );
+  const oversized = parseDashboardPreferences(
+    JSON.stringify({
+      ...compact,
+      version: 7,
+      tableRowHeight: 500,
+    }),
+  );
+
+  assert.equal(compact.tableRowResizeEnabled, true);
+  assert.equal(compact.tableRowHeight, TABLE_ROW_MIN_HEIGHT);
+  assert.equal(oversized.tableRowHeight, TABLE_ROW_DEFAULT_HEIGHT);
+  assert.equal(clampTableRowHeight(Number.NaN), TABLE_ROW_DEFAULT_HEIGHT);
 });
 
 test("fits visible table columns to the panel while preserving hidden widths", () => {
@@ -728,52 +766,79 @@ test("fits visible table columns to the panel while preserving hidden widths", (
   assert.equal(fitted.comments, 333);
 });
 
-test("redistributes a resized column without changing the table width", () => {
+test("resizes only the two columns adjacent to a divider", () => {
   const widths = {
     ...TABLE_COLUMN_DEFAULT_WIDTHS,
     post: 400,
     publishedAt: 200,
     views: 400,
   };
-  const visible = ["post", "publishedAt", "views"];
-  const resized = redistributeTableColumnWidth(
+  const resized = resizeAdjacentTableColumns(
     widths,
-    visible,
+    "publishedAt",
     "views",
-    600,
+    120,
   );
 
-  assert.equal(resized.views, 600);
-  assert.ok(resized.post < widths.post);
-  assert.ok(resized.publishedAt < widths.publishedAt);
-  assert.ok(
-    Math.abs(
-      resized.post + resized.publishedAt + resized.views - 1000,
-    ) < 0.1,
-  );
-  assert.ok(resized.post >= TABLE_COLUMN_MIN_WIDTHS.post);
+  assert.equal(resized.post, widths.post);
+  assert.equal(resized.publishedAt, 120);
+  assert.equal(resized.views, 480);
   assert.ok(resized.publishedAt >= TABLE_COLUMN_MIN_WIDTHS.publishedAt);
+  assert.equal(resized.publishedAt + resized.views, 600);
 });
 
-test("uses the table width as the dynamic resize maximum", () => {
+test("stops an adjacent divider when either neighboring column reaches minimum", () => {
   const widths = {
     ...TABLE_COLUMN_DEFAULT_WIDTHS,
-    post: 310,
-    publishedAt: 112,
-    views: 128,
+    post: 400,
+    publishedAt: 200,
+    views: 300,
   };
-  const visible = ["post", "publishedAt", "views"];
-  assert.equal(getDynamicColumnMaxWidth(widths, visible, "views"), 198);
-
-  const resized = redistributeTableColumnWidth(
+  const growLeft = resizeAdjacentTableColumns(
     widths,
-    visible,
-    "views",
+    "post",
+    "publishedAt",
     900,
   );
-  assert.equal(resized.views, 198);
-  assert.equal(resized.post, TABLE_COLUMN_MIN_WIDTHS.post);
-  assert.equal(resized.publishedAt, TABLE_COLUMN_MIN_WIDTHS.publishedAt);
+  const growRight = resizeAdjacentTableColumns(
+    widths,
+    "publishedAt",
+    "views",
+    -100,
+  );
+
+  assert.equal(growLeft.post, 488);
+  assert.equal(
+    growLeft.publishedAt,
+    TABLE_COLUMN_MIN_WIDTHS.publishedAt,
+  );
+  assert.equal(growLeft.views, widths.views);
+  assert.equal(
+    growRight.publishedAt,
+    TABLE_COLUMN_MIN_WIDTHS.publishedAt,
+  );
+  assert.equal(growRight.views, 388);
+  assert.equal(growRight.post, widths.post);
+});
+
+test("resets an adjacent divider to its default proportions", () => {
+  const reset = resetAdjacentTableColumns(
+    {
+      ...TABLE_COLUMN_DEFAULT_WIDTHS,
+      publishedAt: 160,
+      views: 240,
+    },
+    "publishedAt",
+    "views",
+  );
+  const expectedLeft =
+    400 *
+    (TABLE_COLUMN_DEFAULT_WIDTHS.publishedAt /
+      (TABLE_COLUMN_DEFAULT_WIDTHS.publishedAt +
+        TABLE_COLUMN_DEFAULT_WIDTHS.views));
+
+  assert.ok(Math.abs(reset.publishedAt - expectedLeft) < 0.02);
+  assert.ok(Math.abs(reset.publishedAt + reset.views - 400) < 0.02);
 });
 
 test("prevents engagement-component double counting in every toggle direction", () => {
@@ -912,6 +977,11 @@ test("uses Views and best performance as the fresh default", () => {
     true,
   );
   assert.equal(DEFAULT_DASHBOARD_PREFERENCES.tableInternalScroll, false);
+  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.tableRowResizeEnabled, false);
+  assert.equal(
+    DEFAULT_DASHBOARD_PREFERENCES.tableRowHeight,
+    TABLE_ROW_DEFAULT_HEIGHT,
+  );
 
   const saved = parseDashboardPreferences(
     JSON.stringify({
@@ -927,7 +997,7 @@ test("uses Views and best performance as the fresh default", () => {
     }),
   );
   assert.deepEqual(saved.visibleMetrics, ["reach", "comments"]);
-  assert.equal(saved.version, 6);
+  assert.equal(saved.version, 7);
   assert.deepEqual(saved.rankingMetrics, ["reach"]);
   assert.equal(saved.resultOrder, "performance-asc");
   assert.equal(saved.showMetricQuickControls, false);

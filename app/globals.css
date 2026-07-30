@@ -945,6 +945,25 @@ summary:focus-visible {
   background: #fafbfc;
 }
 
+@keyframes advanced-panel-attention {
+  0%,
+  42%,
+  100% {
+    background: #fafbfc;
+    box-shadow: inset 0 0 0 0 rgb(37 99 235 / 0%);
+  }
+
+  20%,
+  68% {
+    background: #f0f7ff;
+    box-shadow: inset 0 0 0 1px rgb(37 99 235 / 12%);
+  }
+}
+
+.advanced-panel-opening {
+  animation: advanced-panel-attention 1.25s ease-out both;
+}
+
 .advanced-section {
   min-width: 0;
   padding: 17px 20px 19px;
@@ -1372,8 +1391,14 @@ th {
 }
 
 td {
-  height: 78px;
-  padding: 10px 12px;
+  position: relative;
+  height: var(--table-row-height, 78px);
+  padding: clamp(
+      6px,
+      calc((var(--table-row-height, 78px) - 31px) / 2),
+      10px
+    )
+    12px;
   font-size: 11px;
 }
 
@@ -1426,6 +1451,54 @@ tbody tr:hover td {
 html.is-resizing-table-column,
 html.is-resizing-table-column * {
   cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.row-resizer {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: -5px;
+  left: 0;
+  height: 10px;
+  display: block;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.row-resizer::after {
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  left: 8px;
+  height: 1px;
+  border-radius: 99px;
+  background: transparent;
+  content: "";
+  transition:
+    height 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.row-resizer:hover::after,
+.row-resizer:focus-visible::after,
+.row-resizer.is-resizing::after {
+  height: 2px;
+  background: var(--blue);
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 10%);
+}
+
+.row-resizer:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+}
+
+.table-frame.is-row-resizing,
+html.is-resizing-table-row,
+html.is-resizing-table-row * {
+  cursor: row-resize !important;
   user-select: none !important;
 }
 
@@ -1512,6 +1585,23 @@ button.metric-column-heading:focus-visible {
   align-items: center;
   gap: 3px 8px;
   padding: 3px 0;
+}
+
+.table-frame.is-compact-rows .post-cell {
+  padding-block: 0;
+}
+
+.table-frame.is-compact-rows .post-page {
+  display: none;
+}
+
+.table-frame.is-compact-rows .post-rank,
+.table-frame.is-compact-rows .copy-title-button {
+  grid-row: 1;
+}
+
+.table-frame.is-compact-rows .post-cell-hit {
+  inset-block: -6px;
 }
 
 .post-cell > *:not(.post-cell-hit, .copy-title-button) {
@@ -2834,6 +2924,13 @@ td time {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .advanced-panel-opening {
+    background: #f6faff;
+    box-shadow: inset 0 0 0 1px rgb(37 99 235 / 10%);
   }
 }

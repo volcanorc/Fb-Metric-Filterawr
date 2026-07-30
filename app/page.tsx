@@ -77,7 +77,7 @@ import {
   type ChartInteractionState,
   type ChartMetricTransitionState,
   type CsvParseResult,
-  type DashboardPreferencesV6,
+  type DashboardPreferencesV7,
   type DashboardView,
   type DatePreset,
   type DuplicateTitleMode,
@@ -91,6 +91,7 @@ import {
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   DEFAULT_VISIBLE_METRICS,
+  LEGACY_V6_PREFERENCES_STORAGE_KEY,
   LEGACY_V5_PREFERENCES_STORAGE_KEY,
   LEGACY_PREFERENCES_STORAGE_KEY,
   LEGACY_V3_PREFERENCES_STORAGE_KEY,
@@ -102,9 +103,13 @@ import {
   TABLE_COLUMN_DEFAULT_WIDTHS,
   TABLE_COLUMN_IDS,
   TABLE_COLUMN_MIN_WIDTHS,
+  TABLE_ROW_COMPACT_THRESHOLD,
+  TABLE_ROW_DEFAULT_HEIGHT,
+  TABLE_ROW_MIN_HEIGHT,
   applyDuplicateTitleMode,
   buildChartData,
   calculateTotals,
+  clampTableRowHeight,
   completeChartMetricExit,
   filterPosts,
   fitTableColumnWidths,
@@ -116,14 +121,14 @@ import {
   getMetricValue,
   getChartDataSignature,
   getDisplayedRowNumber,
-  getDynamicColumnMaxWidth,
   getPostHeadline,
   getResultSortRule,
   isCustomDateRangeValid,
   parseDashboardPreferences,
   parseFacebookCsv,
   reconcileChartMetricTransition,
-  redistributeTableColumnWidth,
+  resetAdjacentTableColumns,
+  resizeAdjacentTableColumns,
   resolveChartDatum,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
@@ -430,7 +435,7 @@ const CHART_DATA_DURATION = 360;
 const CHART_SERIES_EXIT_DURATION = 140;
 const CHART_ANIMATION_LIMIT = 200;
 const BAR_LABEL_BUILD_MARKER = "postpulse-bar-label-remount-v1";
-const COLUMN_RESIZE_BUILD_MARKER = "postpulse-column-resize-v1";
+const COLUMN_RESIZE_BUILD_MARKER = "postpulse-adjacent-column-resize-v2";
 const chartDatumMatcher = matchByDataKey("key");
 
 function AnimatedAxisLabels({
@@ -979,6 +984,11 @@ export default function Home() {
   const [showMetricQuickControls, setShowMetricQuickControls] =
     useState(true);
   const [tableInternalScroll, setTableInternalScroll] = useState(false);
+  const [tableRowResizeEnabled, setTableRowResizeEnabled] = useState(false);
+  const [tableRowHeight, setTableRowHeight] = useState(
+    TABLE_ROW_DEFAULT_HEIGHT,
+  );
+  const [resizingTableRows, setResizingTableRows] = useState(false);
   const [columnSizing, setColumnSizing] = useState<ColumnSizingState>({
     ...TABLE_COLUMN_DEFAULT_WIDTHS,
   });
@@ -1001,11 +1011,13 @@ export default function Home() {
   const rankingMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const tableFrameRef = useRef<HTMLDivElement | null>(null);
   const columnResizeCleanupRef = useRef<(() => void) | null>(null);
+  const rowResizeCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     try {
       const preferences = parseDashboardPreferences(
         window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_V6_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_V5_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_V3_PREFERENCES_STORAGE_KEY) ??
@@ -1023,6 +1035,8 @@ export default function Home() {
       setShowMetricQuickControls(preferences.showMetricQuickControls);
       setTableInternalScroll(preferences.tableInternalScroll);
       setColumnSizing({ ...preferences.columnWidths });
+      setTableRowResizeEnabled(preferences.tableRowResizeEnabled);
+      setTableRowHeight(preferences.tableRowHeight);
       setPagination({ pageIndex: 0, pageSize: preferences.pageSize });
     } catch {
       // The dashboard remains usable when browser storage is unavailable.
@@ -1045,8 +1059,8 @@ export default function Home() {
   useEffect(() => {
     if (!preferencesReady) return;
     const timer = window.setTimeout(() => {
-      const preferences: DashboardPreferencesV6 = {
-        version: 6,
+      const preferences: DashboardPreferencesV7 = {
+        version: 7,
         view,
         visibleMetrics: visibleMetricKeys,
         rankingMetrics,
@@ -1066,12 +1080,15 @@ export default function Home() {
             0,
           ),
         ),
+        tableRowResizeEnabled,
+        tableRowHeight,
       };
       try {
         window.localStorage.setItem(
           PREFERENCES_STORAGE_KEY,
           JSON.stringify(preferences),
         );
+        window.localStorage.removeItem(LEGACY_V6_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_V5_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_V3_PREFERENCES_STORAGE_KEY);
@@ -1092,6 +1109,8 @@ export default function Home() {
     resultOrder,
     showMetricQuickControls,
     tableInternalScroll,
+    tableRowHeight,
+    tableRowResizeEnabled,
     view,
     visibleMetricKeys,
   ]);
@@ -1311,7 +1330,7 @@ export default function Home() {
               <span>{label}</span>
               {isRankingMetric ? (
                 <span className="ranking-indicator">
-                  <Sparkles size={10} /> Ranking
+                  <Sparkles size={10} /> Priority
                 </span>
               ) : null}
             </>
@@ -1332,10 +1351,10 @@ export default function Home() {
               }
               title={
                 lastRankingMetric
-                  ? "At least one ranking metric must remain selected"
+                  ? "At least one priority metric must remain selected"
                   : `${isRankingMetric ? "Remove" : "Add"} ${label} ${
                       isRankingMetric ? "from" : "to"
-                    } balanced ranking`
+                    } priority metrics`
               }
             >
               {content}
@@ -1423,30 +1442,36 @@ export default function Home() {
     () => () => {
       columnResizeCleanupRef.current?.();
       columnResizeCleanupRef.current = null;
+      rowResizeCleanupRef.current?.();
+      rowResizeCleanupRef.current = null;
       document.documentElement.classList.remove("is-resizing-table-column");
+      document.documentElement.classList.remove("is-resizing-table-row");
     },
     [],
   );
 
-  function resetColumnWidth(columnId: TableColumnId) {
+  function resetColumnBoundary(
+    leftColumnId: TableColumnId,
+    rightColumnId: TableColumnId,
+  ) {
     setColumnSizing((current) =>
-      redistributeTableColumnWidth(
+      resetAdjacentTableColumns(
         current,
-        visibleTableColumnIds,
-        columnId,
-        TABLE_COLUMN_DEFAULT_WIDTHS[columnId],
+        leftColumnId,
+        rightColumnId,
       ),
     );
   }
 
-  function resizeColumnByKeyboard(
+  function resizeColumnBoundaryByKeyboard(
     event: ReactKeyboardEvent<HTMLElement>,
-    columnId: TableColumnId,
+    leftColumnId: TableColumnId,
+    rightColumnId: TableColumnId,
   ) {
     if (event.key === "Home") {
       event.preventDefault();
       event.stopPropagation();
-      resetColumnWidth(columnId);
+      resetColumnBoundary(leftColumnId, rightColumnId);
       return;
     }
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -1456,11 +1481,12 @@ export default function Home() {
     const direction = event.key === "ArrowRight" ? 1 : -1;
     const step = event.shiftKey ? 32 : 8;
     setColumnSizing((current) =>
-      redistributeTableColumnWidth(
+      resizeAdjacentTableColumns(
         current,
-        visibleTableColumnIds,
-        columnId,
-        (current[columnId] ?? TABLE_COLUMN_DEFAULT_WIDTHS[columnId]) +
+        leftColumnId,
+        rightColumnId,
+        (current[leftColumnId] ??
+          TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId]) +
           direction * step,
       ),
     );
@@ -1468,7 +1494,8 @@ export default function Home() {
 
   function startColumnResize(
     event: ReactPointerEvent<HTMLElement>,
-    columnId: TableColumnId,
+    leftColumnId: TableColumnId,
+    rightColumnId: TableColumnId,
   ) {
     if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
@@ -1478,22 +1505,22 @@ export default function Home() {
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startWidths = { ...columnSizing };
-    const startWidth =
-      startWidths[columnId] ?? TABLE_COLUMN_DEFAULT_WIDTHS[columnId];
-    const visibleIds = [...visibleTableColumnIds];
+    const startLeftWidth =
+      startWidths[leftColumnId] ??
+      TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId];
 
-    setResizingColumnId(columnId);
+    setResizingColumnId(leftColumnId);
     document.documentElement.classList.add("is-resizing-table-column");
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
       setColumnSizing(
-        redistributeTableColumnWidth(
+        resizeAdjacentTableColumns(
           startWidths,
-          visibleIds,
-          columnId,
-          startWidth + moveEvent.clientX - startX,
+          leftColumnId,
+          rightColumnId,
+          startLeftWidth + moveEvent.clientX - startX,
         ),
       );
     };
@@ -1514,6 +1541,76 @@ export default function Home() {
     };
 
     columnResizeCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handlePointerMove, {
+      passive: false,
+    });
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+  }
+
+  function resetTableRowHeight() {
+    setTableRowHeight(TABLE_ROW_DEFAULT_HEIGHT);
+  }
+
+  function resizeTableRowsByKeyboard(
+    event: ReactKeyboardEvent<HTMLElement>,
+  ) {
+    if (event.key === "Home") {
+      event.preventDefault();
+      event.stopPropagation();
+      resetTableRowHeight();
+      return;
+    }
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const step = event.shiftKey ? 12 : 4;
+    setTableRowHeight((current) =>
+      clampTableRowHeight(current + direction * step),
+    );
+  }
+
+  function startTableRowResize(event: ReactPointerEvent<HTMLElement>) {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    rowResizeCleanupRef.current?.();
+
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    const startHeight = tableRowHeight;
+
+    setResizingTableRows(true);
+    document.documentElement.classList.add("is-resizing-table-row");
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      moveEvent.preventDefault();
+      setTableRowHeight(
+        clampTableRowHeight(
+          startHeight + moveEvent.clientY - startY,
+        ),
+      );
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+      document.documentElement.classList.remove("is-resizing-table-row");
+      setResizingTableRows(false);
+      if (rowResizeCleanupRef.current === cleanup) {
+        rowResizeCleanupRef.current = null;
+      }
+    };
+    const handlePointerEnd = (endEvent: PointerEvent) => {
+      if (endEvent.pointerId !== pointerId) return;
+      cleanup();
+    };
+
+    rowResizeCleanupRef.current = cleanup;
     window.addEventListener("pointermove", handlePointerMove, {
       passive: false,
     });
@@ -1646,6 +1743,8 @@ export default function Home() {
     setShowMetricQuickControls(defaults.showMetricQuickControls);
     setTableInternalScroll(defaults.tableInternalScroll);
     setColumnSizing({ ...defaults.columnWidths });
+    setTableRowResizeEnabled(defaults.tableRowResizeEnabled);
+    setTableRowHeight(defaults.tableRowHeight);
     setPagination({ pageIndex: 0, pageSize: defaults.pageSize });
   }
 
@@ -1794,7 +1893,7 @@ export default function Home() {
 
           <div
             className="ranking-controls"
-            aria-label="Ranking controls"
+            aria-label="Priority controls"
             data-ranking-model="postpulse-accurate-ranking-v2"
           >
             <section className="ranking-control-card">
@@ -1827,8 +1926,8 @@ export default function Home() {
               <div className="ranking-control-heading">
                 <span>2</span>
                 <div>
-                  <strong>Ranking metrics</strong>
-                  <small>Choose the signals that determine post rank</small>
+                  <strong>Priority metrics</strong>
+                  <small>Choose what matters most for these results</small>
                 </div>
               </div>
               <div className="ranking-metric-dropdown" ref={rankingMenuRef}>
@@ -1851,7 +1950,7 @@ export default function Home() {
                     className="ranking-metric-menu"
                     id="ranking-metric-options"
                     role="group"
-                    aria-label="Metrics used to rank posts"
+                    aria-label="Metrics used to prioritize posts"
                   >
                     {rankingMetricDefinitions.map(
                       ({
@@ -1895,8 +1994,8 @@ export default function Home() {
                       },
                     )}
                     <p>
-                      Posts that perform consistently across all selected
-                      metrics rank higher. Engagement cannot be combined with
+                      Posts that perform well across all selected priority
+                      metrics appear first. Engagement cannot be combined with
                       its reaction, comment, or share components.
                     </p>
                   </div>
@@ -1905,10 +2004,9 @@ export default function Home() {
               <p className="balanced-ranking-note">
                 <Sparkles size={12} />
                 <span>
-                  <strong>Balanced performance</strong>
-                  Equal weight across {rankingMetrics.length}{" "}
-                  {rankingMetrics.length === 1 ? "metric" : "metrics"}; a
-                  consistent comparison, not a universal quality score.
+                  <strong>How priority works</strong>
+                  Posts that perform well across all selected priority metrics
+                  appear first.
                 </span>
               </p>
             </section>
@@ -1935,8 +2033,8 @@ export default function Home() {
               </select>
               <p className="order-result-note">
                 {performanceOrdering
-                  ? `Uses ${rankingMetricsSummary} for balanced ranking.`
-                  : "Ranking metrics stay selected for when you return to performance."}
+                  ? `Prioritizes ${rankingMetricsSummary} together.`
+                  : "Priority metrics stay selected for performance ordering."}
               </p>
             </section>
           </div>
@@ -2035,7 +2133,10 @@ export default function Home() {
           ) : null}
 
           {advancedOpen ? (
-            <section className="advanced-panel" aria-label="Advanced filters">
+            <section
+              className="advanced-panel advanced-panel-opening"
+              aria-label="Advanced filters"
+            >
               <div className="advanced-section filter-dimensions">
                 <div className="advanced-title">
                   <SlidersHorizontal size={15} />
@@ -2096,7 +2197,7 @@ export default function Home() {
                   </button>
                 </div>
                 <p className="preference-note">
-                  Controls columns and chart series. Adding a ranking metric
+                  Controls columns and chart series. Adding a priority metric
                   shows it automatically; you can hide it again here. Saved on
                   this device.
                 </p>
@@ -2127,6 +2228,21 @@ export default function Home() {
                     <strong>Scrollable table</strong>
                     <small>
                       Keep long desktop tables inside a fixed-height frame.
+                    </small>
+                  </span>
+                </label>
+                <label className="quick-controls-setting">
+                  <input
+                    type="checkbox"
+                    checked={tableRowResizeEnabled}
+                    onChange={(event) =>
+                      setTableRowResizeEnabled(event.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>Resizable row heights</strong>
+                    <small>
+                      Drag a row edge to set one saved height for the table.
                     </small>
                   </span>
                 </label>
@@ -2306,9 +2422,16 @@ export default function Home() {
                 <div
                   className={`table-frame ${
                     tableInternalScroll ? "table-frame-scrollable" : ""
-                  } ${resizingColumnId ? "is-column-resizing" : ""}`}
+                  } ${resizingColumnId ? "is-column-resizing" : ""} ${
+                    tableRowResizeEnabled ? "is-row-height-resizable" : ""
+                  } ${resizingTableRows ? "is-row-resizing" : ""} ${
+                    tableRowHeight < TABLE_ROW_COMPACT_THRESHOLD
+                      ? "is-compact-rows"
+                      : ""
+                  }`}
                   data-testid="metrics-table"
                   data-column-resize={COLUMN_RESIZE_BUILD_MARKER}
+                  data-row-resize="postpulse-row-resize-v1"
                   ref={tableFrameRef}
                 >
                   <table
@@ -2321,7 +2444,8 @@ export default function Home() {
                         tableViewportWidth,
                         renderedTableWidth,
                       )}px`,
-                    }}
+                      "--table-row-height": `${tableRowHeight}px`,
+                    } as CSSProperties}
                   >
                     <colgroup>
                       {table.getVisibleLeafColumns().map((column) => (
@@ -2340,16 +2464,23 @@ export default function Home() {
                     <thead>
                       {table.getHeaderGroups().map((headerGroup) => (
                         <tr key={headerGroup.id}>
-                          {headerGroup.headers.map((header) => {
+                          {headerGroup.headers.map((header, headerIndex) => {
                             const columnId = header.id as TableColumnId;
+                            const rightColumnId = headerGroup.headers[
+                              headerIndex + 1
+                            ]?.id as TableColumnId | undefined;
                             const currentWidth =
                               columnSizing[columnId] ??
                               TABLE_COLUMN_DEFAULT_WIDTHS[columnId];
-                            const maximumWidth = getDynamicColumnMaxWidth(
-                              columnSizing,
-                              visibleTableColumnIds,
-                              columnId,
-                            );
+                            const rightWidth = rightColumnId
+                              ? (columnSizing[rightColumnId] ??
+                                TABLE_COLUMN_DEFAULT_WIDTHS[rightColumnId])
+                              : 0;
+                            const maximumWidth = rightColumnId
+                              ? currentWidth +
+                                rightWidth -
+                                TABLE_COLUMN_MIN_WIDTHS[rightColumnId]
+                              : currentWidth;
                             return (
                               <th
                                 key={header.id}
@@ -2373,7 +2504,8 @@ export default function Home() {
                                       header.column.columnDef.header,
                                       header.getContext(),
                                     )}
-                                {header.column.getCanResize() ? (
+                                {header.column.getCanResize() &&
+                                rightColumnId ? (
                                   <span
                                     className={`column-resizer ${
                                       resizingColumnId === columnId
@@ -2381,7 +2513,7 @@ export default function Home() {
                                         : ""
                                     }`}
                                     role="separator"
-                                    aria-label={`Resize ${TABLE_COLUMN_LABELS[columnId]} column`}
+                                    aria-label={`Resize ${TABLE_COLUMN_LABELS[columnId]} and ${TABLE_COLUMN_LABELS[rightColumnId]} columns`}
                                     aria-orientation="vertical"
                                     aria-valuemin={
                                       TABLE_COLUMN_MIN_WIDTHS[columnId]
@@ -2396,13 +2528,24 @@ export default function Home() {
                                     onDoubleClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
-                                      resetColumnWidth(columnId);
+                                      resetColumnBoundary(
+                                        columnId,
+                                        rightColumnId,
+                                      );
                                     }}
                                     onKeyDown={(event) =>
-                                      resizeColumnByKeyboard(event, columnId)
+                                      resizeColumnBoundaryByKeyboard(
+                                        event,
+                                        columnId,
+                                        rightColumnId,
+                                      )
                                     }
                                     onPointerDown={(event) =>
-                                      startColumnResize(event, columnId)
+                                      startColumnResize(
+                                        event,
+                                        columnId,
+                                        rightColumnId,
+                                      )
                                     }
                                   />
                                 ) : null}
@@ -2415,21 +2558,80 @@ export default function Home() {
                     <tbody>
                       {table.getRowModel().rows.map((row) => (
                         <tr key={row.id}>
-                          {row.getVisibleCells().map((cell) => (
-                            <td
-                              key={cell.id}
-                              className={
-                                cell.column.id === "post"
-                                  ? "sticky-column"
-                                  : ""
-                              }
-                            >
-                              {flexRender(
-                                cell.column.columnDef.cell,
-                                cell.getContext(),
-                              )}
-                            </td>
-                          ))}
+                          {row.getVisibleCells().map((cell, cellIndex) => {
+                            const primaryHandle = cellIndex === 0;
+                            return (
+                              <td
+                                key={cell.id}
+                                className={
+                                  cell.column.id === "post"
+                                    ? "sticky-column"
+                                    : ""
+                                }
+                              >
+                                {flexRender(
+                                  cell.column.columnDef.cell,
+                                  cell.getContext(),
+                                )}
+                                {tableRowResizeEnabled ? (
+                                  <span
+                                    className={`row-resizer ${
+                                      resizingTableRows ? "is-resizing" : ""
+                                    }`}
+                                    role={
+                                      primaryHandle
+                                        ? "separator"
+                                        : undefined
+                                    }
+                                    aria-label={
+                                      primaryHandle
+                                        ? "Resize all table rows"
+                                        : undefined
+                                    }
+                                    aria-orientation={
+                                      primaryHandle
+                                        ? "horizontal"
+                                        : undefined
+                                    }
+                                    aria-valuemin={
+                                      primaryHandle
+                                        ? TABLE_ROW_MIN_HEIGHT
+                                        : undefined
+                                    }
+                                    aria-valuemax={
+                                      primaryHandle
+                                        ? TABLE_ROW_DEFAULT_HEIGHT
+                                        : undefined
+                                    }
+                                    aria-valuenow={
+                                      primaryHandle
+                                        ? tableRowHeight
+                                        : undefined
+                                    }
+                                    aria-hidden={
+                                      primaryHandle ? undefined : true
+                                    }
+                                    tabIndex={primaryHandle ? 0 : -1}
+                                    title="Drag to resize all rows. Double-click or press Home to reset."
+                                    onClick={(event) =>
+                                      event.stopPropagation()
+                                    }
+                                    onDoubleClick={(event) => {
+                                      event.preventDefault();
+                                      event.stopPropagation();
+                                      resetTableRowHeight();
+                                    }}
+                                    onKeyDown={
+                                      primaryHandle
+                                        ? resizeTableRowsByKeyboard
+                                        : undefined
+                                    }
+                                    onPointerDown={startTableRowResize}
+                                  />
+                                ) : null}
+                              </td>
+                            );
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -2528,7 +2730,7 @@ export default function Home() {
                                       key as RankingMetricKey,
                                     ) ? (
                                       <em>
-                                        <Sparkles size={9} /> Ranking
+                                        <Sparkles size={9} /> Priority
                                       </em>
                                     ) : null}
                                   </button>

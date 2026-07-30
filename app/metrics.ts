@@ -148,8 +148,8 @@ export interface ChartInteractionState {
   activeIndex?: number | string | null;
 }
 
-export interface DashboardPreferencesV6 {
-  version: 6;
+export interface DashboardPreferencesV7 {
+  version: 7;
   view: DashboardView;
   visibleMetrics: TableMetricKey[];
   rankingMetrics: RankingMetricKey[];
@@ -159,6 +159,8 @@ export interface DashboardPreferencesV6 {
   showMetricQuickControls: boolean;
   tableInternalScroll: boolean;
   columnWidths: TableColumnWidths;
+  tableRowResizeEnabled: boolean;
+  tableRowHeight: number;
 }
 
 export interface MetricDefinition {
@@ -173,7 +175,8 @@ export interface MetricDefinition {
   quickControl?: boolean;
 }
 
-export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v6";
+export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v7";
+export const LEGACY_V6_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v6";
 export const LEGACY_V5_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v5";
 export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v4";
 export const LEGACY_V3_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v3";
@@ -332,8 +335,12 @@ export const TABLE_COLUMN_MIN_WIDTHS: TableColumnWidths = {
   engagementRate: 112,
 };
 
-export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV6 = {
-  version: 6,
+export const TABLE_ROW_DEFAULT_HEIGHT = 78;
+export const TABLE_ROW_MIN_HEIGHT = 44;
+export const TABLE_ROW_COMPACT_THRESHOLD = 58;
+
+export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV7 = {
+  version: 7,
   view: "table",
   visibleMetrics: DEFAULT_VISIBLE_METRICS,
   rankingMetrics: ["views"],
@@ -343,6 +350,8 @@ export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV6 = {
   showMetricQuickControls: true,
   tableInternalScroll: false,
   columnWidths: { ...TABLE_COLUMN_DEFAULT_WIDTHS },
+  tableRowResizeEnabled: false,
+  tableRowHeight: TABLE_ROW_DEFAULT_HEIGHT,
 };
 
 const metricKeys = new Set<TableMetricKey>(
@@ -372,13 +381,23 @@ const requiredColumns = [
 
 type RawRow = Record<string, string | undefined>;
 
-function cloneDefaultPreferences(): DashboardPreferencesV6 {
+function cloneDefaultPreferences(): DashboardPreferencesV7 {
   return {
     ...DEFAULT_DASHBOARD_PREFERENCES,
     visibleMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics],
     rankingMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics],
     columnWidths: { ...DEFAULT_DASHBOARD_PREFERENCES.columnWidths },
   };
+}
+
+export function clampTableRowHeight(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return TABLE_ROW_DEFAULT_HEIGHT;
+  }
+  return Math.min(
+    TABLE_ROW_DEFAULT_HEIGHT,
+    Math.max(TABLE_ROW_MIN_HEIGHT, Math.round(value)),
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -510,53 +529,52 @@ export function fitTableColumnWidths(
     : shrinkColumns(next, visibleColumnIds, currentTotal - targetTotal);
 }
 
-export function getDynamicColumnMaxWidth(
-  widths: Partial<Record<TableColumnId, number>>,
-  visibleColumnIds: readonly TableColumnId[],
-  resizedColumnId: TableColumnId,
-): number {
-  const totalWidth = visibleColumnIds.reduce(
-    (sum, id) => sum + getColumnWidth(widths, id),
-    0,
-  );
-  const otherMinimums = visibleColumnIds.reduce(
-    (sum, id) =>
-      id === resizedColumnId ? sum : sum + TABLE_COLUMN_MIN_WIDTHS[id],
-    0,
-  );
-  return Math.max(
-    TABLE_COLUMN_MIN_WIDTHS[resizedColumnId],
-    totalWidth - otherMinimums,
-  );
-}
-
-export function redistributeTableColumnWidth(
+export function resizeAdjacentTableColumns(
   currentWidths: Partial<Record<TableColumnId, number>>,
-  visibleColumnIds: readonly TableColumnId[],
-  resizedColumnId: TableColumnId,
-  requestedWidth: number,
+  leftColumnId: TableColumnId,
+  rightColumnId: TableColumnId,
+  requestedLeftWidth: number,
 ): TableColumnWidths {
   const next = Object.fromEntries(
     TABLE_COLUMN_IDS.map((id) => [id, getColumnWidth(currentWidths, id)]),
   ) as TableColumnWidths;
-  if (!visibleColumnIds.includes(resizedColumnId)) return next;
+  if (leftColumnId === rightColumnId) return next;
 
-  const minimum = TABLE_COLUMN_MIN_WIDTHS[resizedColumnId];
-  const maximum = getDynamicColumnMaxWidth(
-    next,
-    visibleColumnIds,
-    resizedColumnId,
+  const pairTotal = next[leftColumnId] + next[rightColumnId];
+  const minimum = TABLE_COLUMN_MIN_WIDTHS[leftColumnId];
+  const maximum = Math.max(
+    minimum,
+    pairTotal - TABLE_COLUMN_MIN_WIDTHS[rightColumnId],
   );
-  const target = Math.min(maximum, Math.max(minimum, requestedWidth));
-  const current = next[resizedColumnId];
-  const delta = target - current;
-  if (Math.abs(delta) < 0.01) return next;
+  const target = Math.min(
+    maximum,
+    Math.max(minimum, requestedLeftWidth),
+  );
 
-  const otherIds = visibleColumnIds.filter((id) => id !== resizedColumnId);
-  next[resizedColumnId] = roundColumnWidth(target);
-  return delta > 0
-    ? shrinkColumns(next, otherIds, delta)
-    : growColumns(next, otherIds, -delta);
+  next[leftColumnId] = roundColumnWidth(target);
+  next[rightColumnId] = roundColumnWidth(pairTotal - target);
+  return next;
+}
+
+export function resetAdjacentTableColumns(
+  currentWidths: Partial<Record<TableColumnId, number>>,
+  leftColumnId: TableColumnId,
+  rightColumnId: TableColumnId,
+): TableColumnWidths {
+  const leftWidth = getColumnWidth(currentWidths, leftColumnId);
+  const rightWidth = getColumnWidth(currentWidths, rightColumnId);
+  const pairTotal = leftWidth + rightWidth;
+  const defaultPairTotal =
+    TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId] +
+    TABLE_COLUMN_DEFAULT_WIDTHS[rightColumnId];
+  const defaultLeftRatio =
+    TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId] / defaultPairTotal;
+  return resizeAdjacentTableColumns(
+    currentWidths,
+    leftColumnId,
+    rightColumnId,
+    pairTotal * defaultLeftRatio,
+  );
 }
 
 export function normalizeRankingMetrics(
@@ -712,13 +730,16 @@ export function parseDashboardPreferences(
   storedValue: string | null,
   legacyVisibilityValue: string | null = null,
   legacyViewValue: string | null = null,
-): DashboardPreferencesV6 {
+): DashboardPreferencesV7 {
   const defaults = cloneDefaultPreferences();
   const stored = parseJson(storedValue);
 
-  if (isRecord(stored) && (stored.version === 6 || stored.version === 5)) {
+  if (
+    isRecord(stored) &&
+    (stored.version === 7 || stored.version === 6 || stored.version === 5)
+  ) {
     return {
-      version: 6,
+      version: 7,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -749,15 +770,24 @@ export function parseDashboardPreferences(
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
       columnWidths:
-        stored.version === 6
+        stored.version === 7 || stored.version === 6
           ? validateColumnWidths(stored.columnWidths)
           : { ...defaults.columnWidths },
+      tableRowResizeEnabled:
+        stored.version === 7 &&
+        typeof stored.tableRowResizeEnabled === "boolean"
+          ? stored.tableRowResizeEnabled
+          : defaults.tableRowResizeEnabled,
+      tableRowHeight:
+        stored.version === 7
+          ? clampTableRowHeight(stored.tableRowHeight)
+          : defaults.tableRowHeight,
     };
   }
 
   if (isRecord(stored) && stored.version === 4) {
     return {
-      version: 6,
+      version: 7,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -788,6 +818,8 @@ export function parseDashboardPreferences(
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
       columnWidths: { ...defaults.columnWidths },
+      tableRowResizeEnabled: defaults.tableRowResizeEnabled,
+      tableRowHeight: defaults.tableRowHeight,
     };
   }
 
@@ -798,7 +830,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 6,
+      version: 7,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -825,6 +857,8 @@ export function parseDashboardPreferences(
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
       columnWidths: { ...defaults.columnWidths },
+      tableRowResizeEnabled: defaults.tableRowResizeEnabled,
+      tableRowHeight: defaults.tableRowHeight,
     };
   }
 
@@ -843,7 +877,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 6,
+      version: 7,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -870,6 +904,8 @@ export function parseDashboardPreferences(
           ? stored.tableInternalScroll
           : defaults.tableInternalScroll,
       columnWidths: { ...defaults.columnWidths },
+      tableRowResizeEnabled: defaults.tableRowResizeEnabled,
+      tableRowHeight: defaults.tableRowHeight,
     };
   }
 
