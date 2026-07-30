@@ -7,7 +7,7 @@ const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
 const rankingMarker = "postpulse-accurate-ranking-v2";
 const duplicateFilterMarker = "postpulse-best-duplicate-v2";
-const columnResizeMarker = "postpulse-adjacent-column-resize-v2";
+const columnResizeMarker = "postpulse-cascading-column-resize-v3";
 const rowResizeMarker = "postpulse-row-resize-v1";
 const relevantSources = [
   "app/page.tsx",
@@ -144,7 +144,7 @@ if (!cssHasDuplicateFilter) {
   fail("the compiled CSS is missing the duplicate-title control.");
 }
 if (!clientHasColumnResize || !serverHasColumnResize) {
-  fail("the compiled bundle is missing adjacent-pair column resizing.");
+  fail("the compiled bundle is missing cascading column resizing.");
 }
 if (!cssHasColumnResize) {
   fail("the compiled CSS is missing accessible column resize handles.");
@@ -168,5 +168,5 @@ if (!cssHasCompactMetricGap) {
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with locked table overflow, compact metric spacing, adjacent saved columns, compact rows, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with locked table overflow, compact metric spacing, cascading saved columns, compact rows, and final bar-label behavior.",
 );

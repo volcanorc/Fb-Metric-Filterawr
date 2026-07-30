@@ -118,6 +118,7 @@ import {
   formatDate,
   formatDateRange,
   formatPercent,
+  getCascadingTableDividerRange,
   getMetricValue,
   getChartDataSignature,
   getDisplayedRowNumber,
@@ -128,7 +129,7 @@ import {
   parseFacebookCsv,
   reconcileChartMetricTransition,
   resetAdjacentTableColumns,
-  resizeAdjacentTableColumns,
+  resizeCascadingTableColumns,
   resolveChartDatum,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
@@ -435,7 +436,7 @@ const CHART_DATA_DURATION = 360;
 const CHART_SERIES_EXIT_DURATION = 140;
 const CHART_ANIMATION_LIMIT = 200;
 const BAR_LABEL_BUILD_MARKER = "postpulse-bar-label-remount-v1";
-const COLUMN_RESIZE_BUILD_MARKER = "postpulse-adjacent-column-resize-v2";
+const COLUMN_RESIZE_BUILD_MARKER = "postpulse-cascading-column-resize-v3";
 const chartDatumMatcher = matchByDataKey("key");
 
 function AnimatedAxisLabels({
@@ -1481,8 +1482,9 @@ export default function Home() {
     const direction = event.key === "ArrowRight" ? 1 : -1;
     const step = event.shiftKey ? 32 : 8;
     setColumnSizing((current) =>
-      resizeAdjacentTableColumns(
+      resizeCascadingTableColumns(
         current,
+        visibleTableColumnIds,
         leftColumnId,
         rightColumnId,
         (current[leftColumnId] ??
@@ -1505,6 +1507,7 @@ export default function Home() {
     const pointerId = event.pointerId;
     const startX = event.clientX;
     const startWidths = { ...columnSizing };
+    const startVisibleColumnIds = [...visibleTableColumnIds];
     const startLeftWidth =
       startWidths[leftColumnId] ??
       TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId];
@@ -1516,8 +1519,9 @@ export default function Home() {
       if (moveEvent.pointerId !== pointerId) return;
       moveEvent.preventDefault();
       setColumnSizing(
-        resizeAdjacentTableColumns(
+        resizeCascadingTableColumns(
           startWidths,
+          startVisibleColumnIds,
           leftColumnId,
           rightColumnId,
           startLeftWidth + moveEvent.clientX - startX,
@@ -2472,15 +2476,14 @@ export default function Home() {
                             const currentWidth =
                               columnSizing[columnId] ??
                               TABLE_COLUMN_DEFAULT_WIDTHS[columnId];
-                            const rightWidth = rightColumnId
-                              ? (columnSizing[rightColumnId] ??
-                                TABLE_COLUMN_DEFAULT_WIDTHS[rightColumnId])
-                              : 0;
-                            const maximumWidth = rightColumnId
-                              ? currentWidth +
-                                rightWidth -
-                                TABLE_COLUMN_MIN_WIDTHS[rightColumnId]
-                              : currentWidth;
+                            const dividerRange = rightColumnId
+                              ? getCascadingTableDividerRange(
+                                  columnSizing,
+                                  visibleTableColumnIds,
+                                  columnId,
+                                  rightColumnId,
+                                )
+                              : null;
                             return (
                               <th
                                 key={header.id}
@@ -2515,11 +2518,18 @@ export default function Home() {
                                     role="separator"
                                     aria-label={`Resize ${TABLE_COLUMN_LABELS[columnId]} and ${TABLE_COLUMN_LABELS[rightColumnId]} columns`}
                                     aria-orientation="vertical"
-                                    aria-valuemin={
-                                      TABLE_COLUMN_MIN_WIDTHS[columnId]
-                                    }
-                                    aria-valuemax={Math.round(maximumWidth)}
-                                    aria-valuenow={Math.round(currentWidth)}
+                                    aria-valuemin={Math.round(
+                                      dividerRange?.min ?? 0,
+                                    )}
+                                    aria-valuemax={Math.round(
+                                      dividerRange?.max ?? 0,
+                                    )}
+                                    aria-valuenow={Math.round(
+                                      dividerRange?.now ?? 0,
+                                    )}
+                                    aria-valuetext={`${Math.round(
+                                      dividerRange?.now ?? 0,
+                                    )} pixels from the left edge of the table`}
                                     tabIndex={0}
                                     title="Drag to resize. Double-click or press Home to reset."
                                     onClick={(event) =>

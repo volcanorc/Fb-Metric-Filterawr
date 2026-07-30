@@ -529,8 +529,38 @@ export function fitTableColumnWidths(
     : shrinkColumns(next, visibleColumnIds, currentTotal - targetTotal);
 }
 
-export function resizeAdjacentTableColumns(
+function shrinkTableColumnsInOrder(
+  widths: TableColumnWidths,
+  columnIds: readonly TableColumnId[],
+  requestedAmount: number,
+): number {
+  let remaining = Math.max(0, requestedAmount);
+  let transferred = 0;
+
+  for (const id of columnIds) {
+    if (remaining <= 0) break;
+    const currentWidth = widths[id];
+    const capacity = Math.max(
+      0,
+      currentWidth - TABLE_COLUMN_MIN_WIDTHS[id],
+    );
+    if (capacity <= 0) continue;
+
+    const nextWidth = roundColumnWidth(
+      currentWidth - Math.min(capacity, remaining),
+    );
+    const applied = roundColumnWidth(currentWidth - nextWidth);
+    widths[id] = nextWidth;
+    transferred = roundColumnWidth(transferred + applied);
+    remaining = roundColumnWidth(Math.max(0, remaining - applied));
+  }
+
+  return transferred;
+}
+
+export function resizeCascadingTableColumns(
   currentWidths: Partial<Record<TableColumnId, number>>,
+  visibleColumnIds: readonly TableColumnId[],
   leftColumnId: TableColumnId,
   rightColumnId: TableColumnId,
   requestedLeftWidth: number,
@@ -538,22 +568,69 @@ export function resizeAdjacentTableColumns(
   const next = Object.fromEntries(
     TABLE_COLUMN_IDS.map((id) => [id, getColumnWidth(currentWidths, id)]),
   ) as TableColumnWidths;
-  if (leftColumnId === rightColumnId) return next;
+  if (!Number.isFinite(requestedLeftWidth)) return next;
 
-  const pairTotal = next[leftColumnId] + next[rightColumnId];
-  const minimum = TABLE_COLUMN_MIN_WIDTHS[leftColumnId];
-  const maximum = Math.max(
-    minimum,
-    pairTotal - TABLE_COLUMN_MIN_WIDTHS[rightColumnId],
-  );
-  const target = Math.min(
-    maximum,
-    Math.max(minimum, requestedLeftWidth),
-  );
+  const leftIndex = visibleColumnIds.indexOf(leftColumnId);
+  const rightIndex = visibleColumnIds.indexOf(rightColumnId);
+  if (leftIndex < 0 || rightIndex !== leftIndex + 1) return next;
 
-  next[leftColumnId] = roundColumnWidth(target);
-  next[rightColumnId] = roundColumnWidth(pairTotal - target);
+  const delta = requestedLeftWidth - next[leftColumnId];
+  if (Math.abs(delta) < 0.005) return next;
+
+  if (delta > 0) {
+    const donorIds = visibleColumnIds.slice(rightIndex);
+    const transferred = shrinkTableColumnsInOrder(next, donorIds, delta);
+    next[leftColumnId] = roundColumnWidth(
+      next[leftColumnId] + transferred,
+    );
+    return next;
+  }
+
+  const donorIds = visibleColumnIds.slice(0, rightIndex).reverse();
+  const transferred = shrinkTableColumnsInOrder(next, donorIds, -delta);
+  next[rightColumnId] = roundColumnWidth(
+    next[rightColumnId] + transferred,
+  );
   return next;
+}
+
+export function getCascadingTableDividerRange(
+  currentWidths: Partial<Record<TableColumnId, number>>,
+  visibleColumnIds: readonly TableColumnId[],
+  leftColumnId: TableColumnId,
+  rightColumnId: TableColumnId,
+): { min: number; max: number; now: number } {
+  const leftIndex = visibleColumnIds.indexOf(leftColumnId);
+  const rightIndex = visibleColumnIds.indexOf(rightColumnId);
+  if (leftIndex < 0 || rightIndex !== leftIndex + 1) {
+    return { min: 0, max: 0, now: 0 };
+  }
+
+  const widths = Object.fromEntries(
+    TABLE_COLUMN_IDS.map((id) => [id, getColumnWidth(currentWidths, id)]),
+  ) as TableColumnWidths;
+  const leftIds = visibleColumnIds.slice(0, rightIndex);
+  const rightIds = visibleColumnIds.slice(rightIndex);
+  const totalWidth = visibleColumnIds.reduce(
+    (sum, id) => sum + widths[id],
+    0,
+  );
+  const min = leftIds.reduce(
+    (sum, id) => sum + TABLE_COLUMN_MIN_WIDTHS[id],
+    0,
+  );
+  const reservedRightWidth = rightIds.reduce(
+    (sum, id) => sum + TABLE_COLUMN_MIN_WIDTHS[id],
+    0,
+  );
+
+  return {
+    min: roundColumnWidth(min),
+    max: roundColumnWidth(Math.max(min, totalWidth - reservedRightWidth)),
+    now: roundColumnWidth(
+      leftIds.reduce((sum, id) => sum + widths[id], 0),
+    ),
+  };
 }
 
 export function resetAdjacentTableColumns(
@@ -569,8 +646,9 @@ export function resetAdjacentTableColumns(
     TABLE_COLUMN_DEFAULT_WIDTHS[rightColumnId];
   const defaultLeftRatio =
     TABLE_COLUMN_DEFAULT_WIDTHS[leftColumnId] / defaultPairTotal;
-  return resizeAdjacentTableColumns(
+  return resizeCascadingTableColumns(
     currentWidths,
+    [leftColumnId, rightColumnId],
     leftColumnId,
     rightColumnId,
     pairTotal * defaultLeftRatio,

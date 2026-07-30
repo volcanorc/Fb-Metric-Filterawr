@@ -17,6 +17,7 @@ import {
   completeChartMetricExit,
   filterPosts,
   fitTableColumnWidths,
+  getCascadingTableDividerRange,
   formatBarValueLabel,
   getChartDataSignature,
   getDisplayedRowNumber,
@@ -29,7 +30,7 @@ import {
   normalizeRankingMetrics,
   reconcileChartMetricTransition,
   resetAdjacentTableColumns,
-  resizeAdjacentTableColumns,
+  resizeCascadingTableColumns,
   resolveChartDatum,
   selectAxisLabelIndexes,
   settleChartMetricTransition,
@@ -766,59 +767,115 @@ test("fits visible table columns to the panel while preserving hidden widths", (
   assert.equal(fitted.comments, 333);
 });
 
-test("resizes only the two columns adjacent to a divider", () => {
-  const widths = {
-    ...TABLE_COLUMN_DEFAULT_WIDTHS,
-    post: 400,
-    publishedAt: 200,
-    views: 400,
-  };
-  const resized = resizeAdjacentTableColumns(
-    widths,
-    "publishedAt",
-    "views",
-    120,
-  );
-
-  assert.equal(resized.post, widths.post);
-  assert.equal(resized.publishedAt, 120);
-  assert.equal(resized.views, 480);
-  assert.ok(resized.publishedAt >= TABLE_COLUMN_MIN_WIDTHS.publishedAt);
-  assert.equal(resized.publishedAt + resized.views, 600);
-});
-
-test("stops an adjacent divider when either neighboring column reaches minimum", () => {
+test("cascades leftward donors from Date into Post when Views grows", () => {
   const widths = {
     ...TABLE_COLUMN_DEFAULT_WIDTHS,
     post: 400,
     publishedAt: 200,
     views: 300,
   };
-  const growLeft = resizeAdjacentTableColumns(
+  const visible = ["post", "publishedAt", "views"];
+  const resized = resizeCascadingTableColumns(
     widths,
-    "post",
-    "publishedAt",
-    900,
-  );
-  const growRight = resizeAdjacentTableColumns(
-    widths,
+    visible,
     "publishedAt",
     "views",
-    -100,
+    0,
   );
 
-  assert.equal(growLeft.post, 488);
+  assert.equal(resized.publishedAt, TABLE_COLUMN_MIN_WIDTHS.publishedAt);
+  assert.equal(resized.post, 288);
+  assert.equal(resized.views, 500);
   assert.equal(
-    growLeft.publishedAt,
-    TABLE_COLUMN_MIN_WIDTHS.publishedAt,
+    visible.reduce((sum, id) => sum + resized[id], 0),
+    visible.reduce((sum, id) => sum + widths[id], 0),
   );
-  assert.equal(growLeft.views, widths.views);
+});
+
+test("cascades through Reach, Views, Date, then Post for Engagement", () => {
+  const widths = {
+    ...TABLE_COLUMN_DEFAULT_WIDTHS,
+    post: 400,
+    publishedAt: 200,
+    views: 300,
+    reach: 200,
+    engagement: 200,
+  };
+  const visible = [
+    "post",
+    "publishedAt",
+    "views",
+    "reach",
+    "engagement",
+  ];
+  const resized = resizeCascadingTableColumns(
+    widths,
+    visible,
+    "reach",
+    "engagement",
+    -300,
+  );
+
+  assert.equal(resized.reach, TABLE_COLUMN_MIN_WIDTHS.reach);
+  assert.equal(resized.views, TABLE_COLUMN_MIN_WIDTHS.views);
+  assert.equal(resized.publishedAt, TABLE_COLUMN_MIN_WIDTHS.publishedAt);
+  assert.equal(resized.post, 264);
+  assert.equal(resized.engagement, 700);
   assert.equal(
-    growRight.publishedAt,
-    TABLE_COLUMN_MIN_WIDTHS.publishedAt,
+    visible.reduce((sum, id) => sum + resized[id], 0),
+    visible.reduce((sum, id) => sum + widths[id], 0),
   );
-  assert.equal(growRight.views, 388);
-  assert.equal(growRight.post, widths.post);
+});
+
+test("cascades rightward donors nearest-first and stops at all minimums", () => {
+  const widths = {
+    ...TABLE_COLUMN_DEFAULT_WIDTHS,
+    publishedAt: 200,
+    views: 300,
+    reach: 200,
+    engagement: 200,
+  };
+  const visible = ["post", "publishedAt", "views", "reach", "engagement"];
+  const resized = resizeCascadingTableColumns(
+    widths,
+    visible,
+    "publishedAt",
+    "views",
+    2000,
+  );
+
+  assert.equal(resized.post, widths.post);
+  assert.equal(resized.views, TABLE_COLUMN_MIN_WIDTHS.views);
+  assert.equal(resized.reach, TABLE_COLUMN_MIN_WIDTHS.reach);
+  assert.equal(resized.engagement, TABLE_COLUMN_MIN_WIDTHS.engagement);
+  assert.equal(resized.publishedAt, 564);
+  assert.equal(
+    visible.reduce((sum, id) => sum + resized[id], 0),
+    visible.reduce((sum, id) => sum + widths[id], 0),
+  );
+});
+
+test("cascading resize skips hidden columns and preserves their saved widths", () => {
+  const widths = {
+    ...TABLE_COLUMN_DEFAULT_WIDTHS,
+    publishedAt: 200,
+    views: 300,
+    reach: 220,
+    comments: 333,
+  };
+  const resized = resizeCascadingTableColumns(
+    widths,
+    ["post", "publishedAt", "views", "reach"],
+    "publishedAt",
+    "views",
+    160,
+  );
+
+  assert.equal(resized.comments, 333);
+  assert.equal(resized.publishedAt, 160);
+  assert.equal(resized.views, 340);
+  assert.equal(resized.post, widths.post);
+  assert.equal(resized.reach, widths.reach);
 });
 
 test("resets an adjacent divider to its default proportions", () => {
@@ -839,6 +896,30 @@ test("resets an adjacent divider to its default proportions", () => {
 
   assert.ok(Math.abs(reset.publishedAt - expectedLeft) < 0.02);
   assert.ok(Math.abs(reset.publishedAt + reset.views - 400) < 0.02);
+});
+
+test("reports the full cascading divider range across visible columns", () => {
+  const widths = {
+    ...TABLE_COLUMN_DEFAULT_WIDTHS,
+    post: 400,
+    publishedAt: 160,
+    views: 240,
+    reach: 180,
+  };
+  const range = getCascadingTableDividerRange(
+    widths,
+    ["post", "publishedAt", "views", "reach"],
+    "publishedAt",
+    "views",
+  );
+
+  assert.deepEqual(range, {
+    min: TABLE_COLUMN_MIN_WIDTHS.post + TABLE_COLUMN_MIN_WIDTHS.publishedAt,
+    max: 400 + 160 + 240 + 180 -
+      TABLE_COLUMN_MIN_WIDTHS.views -
+      TABLE_COLUMN_MIN_WIDTHS.reach,
+    now: 560,
+  });
 });
 
 test("prevents engagement-component double counting in every toggle direction", () => {
