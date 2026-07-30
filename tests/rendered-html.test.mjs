@@ -76,3 +76,33 @@ test("ships compact row controls, the filter cue, and simplified priority copy",
   assert.match(css, /\.row-resizer/);
   assert.match(css, /\.table-frame\.is-compact-rows \.post-page/);
 });
+
+test("keeps row resize handles inside a vertically locked non-scrollable table", async () => {
+  const css = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    css,
+    /\.table-frame\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*hidden;/s,
+  );
+  assert.match(
+    css,
+    /\.table-frame-scrollable\s*\{[^}]*overflow-x:\s*auto;[^}]*overflow-y:\s*auto;[^}]*max-height:\s*760px;/s,
+  );
+  assert.match(css, /\.row-resizer\s*\{[^}]*bottom:\s*0;/s);
+});
+
+test("uses compact aligned spacing between metric quantities and bars", async () => {
+  const css = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    css,
+    /\.metric-cell\s*\{[^}]*grid-template-columns:\s*42px minmax\(42px,\s*1fr\);[^}]*gap:\s*4px;/s,
+  );
+  assert.match(css, /\.metric-value\s*\{[^}]*text-align:\s*right;/s);
+});

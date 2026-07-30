@@ -95,6 +95,8 @@ const [
   cssHasFilterAttention,
   clientHasPriorityCopy,
   serverHasPriorityCopy,
+  cssHasVerticalOverflowLock,
+  cssHasCompactMetricGap,
 ] =
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
@@ -116,6 +118,8 @@ const [
     anyFileContains(cssFiles, "advanced-panel-attention"),
     anyFileContains(clientJavaScript, "Priority metrics"),
     anyFileContains(serverJavaScript, "Priority metrics"),
+    anyFileContains(cssFiles, "overflow:auto hidden"),
+    anyFileContains(cssFiles, "grid-template-columns:42px minmax(42px,1fr)"),
   ]);
 
 if (!clientHasMarker) {
@@ -154,9 +158,15 @@ if (!cssHasFilterAttention) {
 if (!clientHasPriorityCopy || !serverHasPriorityCopy) {
   fail("the compiled bundle is missing the simplified priority copy.");
 }
+if (!cssHasVerticalOverflowLock) {
+  fail("the compiled CSS is missing the non-scrollable table overflow lock.");
+}
+if (!cssHasCompactMetricGap) {
+  fail("the compiled CSS is missing the compact metric value layout.");
+}
 
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with adjacent saved columns, compact rows, priority copy, best-copy deduplication, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with locked table overflow, compact metric spacing, adjacent saved columns, compact rows, and final bar-label behavior.",
 );

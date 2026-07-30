@@ -1349,13 +1349,15 @@ summary:focus-visible {
 
 .table-frame {
   overflow-x: auto;
+  overflow-y: hidden;
   border-top: 1px solid var(--line);
   scrollbar-color: #cfd4de transparent;
   scrollbar-width: thin;
 }
 
 .table-frame-scrollable {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   max-height: 760px;
 }
 
@@ -1458,7 +1460,7 @@ html.is-resizing-table-column * {
   position: absolute;
   z-index: 8;
   right: 0;
-  bottom: -5px;
+  bottom: 0;
   left: 0;
   height: 10px;
   display: block;
@@ -1722,9 +1724,9 @@ td time {
 
 .metric-cell {
   display: grid;
-  grid-template-columns: 42px minmax(48px, 1fr);
+  grid-template-columns: 42px minmax(42px, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 4px;
 }
 
 .metric-track {
@@ -1759,7 +1761,7 @@ td time {
   font-size: 10px;
   font-weight: 750;
   font-variant-numeric: tabular-nums;
-  text-align: left;
+  text-align: right;
 }
 
 .metric-track-empty {
