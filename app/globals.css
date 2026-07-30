@@ -2455,7 +2455,241 @@ td time {
   font-size: 9px;
 }
 
+.analysis-toolbar {
+  position: relative;
+  z-index: 12;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 24px 14px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.analysis-toolbar > .search-control {
+  min-width: 180px;
+  flex: 1 1 220px;
+  margin: 0;
+}
+
+.toolbar-field {
+  position: relative;
+  min-width: 126px;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.toolbar-field > span:first-child {
+  padding-left: 2px;
+  letter-spacing: 0.015em;
+  white-space: nowrap;
+}
+
+.toolbar-field select,
+.toolbar-field .ranking-metric-trigger {
+  height: 38px;
+}
+
+.toolbar-field select {
+  min-width: 0;
+  padding: 0 29px 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  outline: 0;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.toolbar-field select:focus-visible {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
+}
+
+.date-range-control {
+  width: 126px;
+}
+
+.priority-toolbar-field {
+  width: 184px;
+}
+
+.performance-control {
+  width: 154px;
+}
+
+.performance-control > small {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 2px;
+  left: 2px;
+  overflow: hidden;
+  color: var(--blue-deep);
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-toolbar .group-control {
+  width: 112px;
+}
+
+.analysis-toolbar > .button {
+  min-height: 38px;
+}
+
+.analysis-toolbar .ranking-metric-menu {
+  width: 390px;
+  right: auto;
+}
+
+.custom-date-popover {
+  position: absolute;
+  z-index: 45;
+  top: calc(100% + 7px);
+  left: 0;
+  width: 360px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: white;
+  box-shadow: 0 18px 42px rgb(16 24 40 / 18%);
+}
+
+.custom-date-popover label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.custom-date-popover input {
+  width: 100%;
+  height: 34px;
+  padding: 0 8px;
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.custom-date-popover > small {
+  grid-column: 1 / -1;
+  color: var(--subtle);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.custom-date-popover > small.date-range-error {
+  color: #b45309;
+}
+
+.settings-dialog {
+  width: min(960px, calc(100vw - 32px));
+  max-width: none;
+  max-height: min(86vh, 820px);
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  box-shadow: 0 28px 80px rgb(16 24 40 / 24%);
+  overflow: hidden;
+}
+
+.settings-dialog::backdrop {
+  background: rgb(15 23 42 / 42%);
+  backdrop-filter: blur(4px);
+}
+
+.settings-dialog[open] {
+  animation: settings-dialog-in 180ms ease-out both;
+}
+
+@keyframes settings-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.settings-dialog-shell {
+  max-height: min(86vh, 820px);
+  display: flex;
+  flex-direction: column;
+  background: #fafbfc;
+}
+
+.settings-dialog-header {
+  min-height: 72px;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  background: white;
+}
+
+.settings-dialog-header h2 {
+  margin: 2px 0 0;
+  font-size: 20px;
+  letter-spacing: -0.025em;
+}
+
+.settings-close {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: white;
+  color: var(--muted);
+}
+
+.settings-close:hover,
+.settings-close:focus-visible {
+  border-color: var(--blue);
+  color: var(--blue-deep);
+}
+
+.settings-dialog .advanced-panel {
+  overflow: auto;
+  border-bottom: 0;
+}
+
+.settings-dialog .advanced-section {
+  background: rgb(255 255 255 / 42%);
+}
+
 @media (max-width: 1180px) {
+  .analysis-toolbar > .search-control {
+    flex-basis: 100%;
+  }
+
+  .analysis-toolbar {
+    padding-bottom: 18px;
+  }
   .dashboard-shell {
     padding-inline: 24px;
   }
@@ -2502,6 +2736,35 @@ td time {
 }
 
 @media (max-width: 820px) {
+  .analysis-toolbar {
+    align-items: stretch;
+    padding-inline: 16px;
+  }
+
+  .analysis-toolbar > .search-control,
+  .analysis-toolbar > .toolbar-field {
+    width: auto;
+    flex: 1 1 calc(50% - 8px);
+  }
+
+  .analysis-toolbar > .button {
+    flex: 1 1 150px;
+  }
+
+  .analysis-toolbar .ranking-metric-menu {
+    width: min(390px, calc(100vw - 48px));
+  }
+
+  .settings-dialog {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+    border-radius: 13px;
+  }
+
+  .settings-dialog-shell {
+    max-height: calc(100vh - 20px);
+  }
+
   .dashboard-shell {
     padding-inline: 16px;
   }
@@ -2808,6 +3071,39 @@ td time {
 }
 
 @media (max-width: 520px) {
+  .analysis-toolbar {
+    padding-inline: 15px;
+  }
+
+  .analysis-toolbar > .search-control,
+  .analysis-toolbar > .toolbar-field,
+  .analysis-toolbar > .button {
+    width: 100%;
+    flex-basis: 100%;
+  }
+
+  .custom-date-popover {
+    position: static;
+    width: 100%;
+    grid-template-columns: 1fr;
+    margin-top: 2px;
+    box-shadow: none;
+  }
+
+  .custom-date-popover > small {
+    grid-column: 1;
+  }
+
+  .settings-dialog {
+    width: 100vw;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .settings-dialog-shell {
+    max-height: 100vh;
+  }
+
   .dashboard-shell {
     padding-inline: 10px;
   }

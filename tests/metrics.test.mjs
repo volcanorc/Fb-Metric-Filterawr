@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AUTOMATIC_PERFORMANCE_METRICS,
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   RANKING_METRICS,
@@ -28,6 +29,7 @@ import {
   parseDashboardPreferences,
   parseFacebookCsv,
   normalizeRankingMetrics,
+  orderPosts,
   reconcileChartMetricTransition,
   resetAdjacentTableColumns,
   resizeCascadingTableColumns,
@@ -634,7 +636,7 @@ test("migrates V5 preferences with clicks ranking and independent visibility", (
     }),
   );
 
-  assert.equal(preferences.version, 7);
+  assert.equal(preferences.version, 8);
   assert.equal(preferences.view, "lines");
   assert.deepEqual(preferences.visibleMetrics, ["totalClicks"]);
   assert.deepEqual(preferences.rankingMetrics, [
@@ -642,7 +644,8 @@ test("migrates V5 preferences with clicks ranking and independent visibility", (
     "comments",
     "totalClicks",
   ]);
-  assert.equal(preferences.resultOrder, "date-asc");
+  assert.equal(preferences.performanceOrder, "none");
+  assert.equal(preferences.dateOrder, "oldest");
   assert.equal(preferences.chartGrouping, "month");
   assert.equal(preferences.pageSize, 50);
   assert.equal(preferences.showMetricQuickControls, true);
@@ -670,7 +673,7 @@ test("migrates V4 ranking preferences and removes aggregate overlap", () => {
     }),
   );
 
-  assert.equal(migrated.version, 7);
+  assert.equal(migrated.version, 8);
   assert.deepEqual(migrated.visibleMetrics, [
     "views",
     "engagement",
@@ -701,7 +704,7 @@ test("migrates V6 column widths and defaults the new row sizing controls", () =>
     }),
   );
 
-  assert.equal(preferences.version, 7);
+  assert.equal(preferences.version, 8);
   assert.equal(preferences.columnWidths.post, 420);
   assert.equal(
     preferences.columnWidths.publishedAt,
@@ -959,13 +962,13 @@ test("prevents engagement-component double counting in every toggle direction", 
   ]);
   assert.deepEqual(clicksSelected.removedMetrics, []);
 
-  const lastMetricGuard = toggleRankingMetricSelection(
+  const emptySelection = toggleRankingMetricSelection(
     ["totalClicks"],
     "totalClicks",
     false,
   );
-  assert.deepEqual(lastMetricGuard.metrics, ["totalClicks"]);
-  assert.equal(lastMetricGuard.changed, false);
+  assert.deepEqual(emptySelection.metrics, []);
+  assert.equal(emptySelection.changed, true);
 });
 
 test("automatically shows newly selected ranking metrics without hiding them later", () => {
@@ -1046,13 +1049,11 @@ test("uses normalized mean as a deterministic fallback for zero primary scores",
   );
 });
 
-test("uses Views and best performance as the fresh default", () => {
+test("uses CSV order with no priority or ordering as the fresh default", () => {
   assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics, ["views"]);
-  assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics, ["views"]);
-  assert.equal(
-    DEFAULT_DASHBOARD_PREFERENCES.resultOrder,
-    "performance-desc",
-  );
+  assert.deepEqual(DEFAULT_DASHBOARD_PREFERENCES.rankingMetrics, []);
+  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.performanceOrder, "none");
+  assert.equal(DEFAULT_DASHBOARD_PREFERENCES.dateOrder, "none");
   assert.equal(
     DEFAULT_DASHBOARD_PREFERENCES.showMetricQuickControls,
     true,
@@ -1078,9 +1079,10 @@ test("uses Views and best performance as the fresh default", () => {
     }),
   );
   assert.deepEqual(saved.visibleMetrics, ["reach", "comments"]);
-  assert.equal(saved.version, 7);
+  assert.equal(saved.version, 8);
   assert.deepEqual(saved.rankingMetrics, ["reach"]);
-  assert.equal(saved.resultOrder, "performance-asc");
+  assert.equal(saved.performanceOrder, "lowest");
+  assert.equal(saved.dateOrder, "none");
   assert.equal(saved.showMetricQuickControls, false);
   assert.equal(saved.tableInternalScroll, true);
 });
@@ -1096,7 +1098,8 @@ test("migrates V3 sort choices without coupling them to visible columns", () => 
   );
   assert.deepEqual(metricSort.visibleMetrics, ["views"]);
   assert.deepEqual(metricSort.rankingMetrics, ["comments"]);
-  assert.equal(metricSort.resultOrder, "performance-asc");
+  assert.equal(metricSort.performanceOrder, "lowest");
+  assert.equal(metricSort.dateOrder, "none");
 
   const balancedSort = parseDashboardPreferences(
     JSON.stringify({
@@ -1107,7 +1110,8 @@ test("migrates V3 sort choices without coupling them to visible columns", () => 
     }),
   );
   assert.deepEqual(balancedSort.rankingMetrics, ["views", "reach"]);
-  assert.equal(balancedSort.resultOrder, "performance-desc");
+  assert.equal(balancedSort.performanceOrder, "best");
+  assert.equal(balancedSort.dateOrder, "none");
 
   const dateSort = parseDashboardPreferences(
     JSON.stringify({
@@ -1119,7 +1123,8 @@ test("migrates V3 sort choices without coupling them to visible columns", () => 
   );
   assert.deepEqual(dateSort.visibleMetrics, ["totalClicks"]);
   assert.deepEqual(dateSort.rankingMetrics, ["views"]);
-  assert.equal(dateSort.resultOrder, "date-asc");
+  assert.equal(dateSort.performanceOrder, "none");
+  assert.equal(dateSort.dateOrder, "oldest");
 
   const unsupportedSort = parseDashboardPreferences(
     JSON.stringify({
@@ -1130,7 +1135,8 @@ test("migrates V3 sort choices without coupling them to visible columns", () => 
     }),
   );
   assert.deepEqual(unsupportedSort.rankingMetrics, ["views"]);
-  assert.equal(unsupportedSort.resultOrder, "performance-desc");
+  assert.equal(unsupportedSort.performanceOrder, "best");
+  assert.equal(unsupportedSort.dateOrder, "none");
 });
 
 test("maps the four result orders to balanced performance or post date", () => {
@@ -1146,6 +1152,138 @@ test("maps the four result orders to balanced performance or post date", () => {
   assert.deepEqual(getResultSortRule("date-asc"), [
     { id: "publishedAt", desc: false },
   ]);
+});
+
+test("applies independent performance and date ordering with month blocks", () => {
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const makePost = (postId, date, value) => ({
+    ...base,
+    postId,
+    publishedAt: new Date(`${date}T12:00:00`).getTime(),
+    views: value,
+    reach: value,
+    reactions: value,
+    comments: 0,
+    shares: 0,
+    engagement: value,
+  });
+  const posts = [
+    makePost("june-mid", "2026-06-30", 50),
+    makePost("july-weak", "2026-07-20", 10),
+    makePost("june-best", "2026-06-01", 200),
+    makePost("july-strong", "2026-07-10", 100),
+  ];
+
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "none", dateOrder: "none" },
+      [],
+    ).map((post) => post.postId),
+    ["june-mid", "july-weak", "june-best", "july-strong"],
+  );
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "best", dateOrder: "none" },
+      ["views"],
+    ).map((post) => post.postId),
+    ["june-best", "july-strong", "june-mid", "july-weak"],
+  );
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "none", dateOrder: "newest" },
+      [],
+    ).map((post) => post.postId),
+    ["july-weak", "july-strong", "june-mid", "june-best"],
+  );
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "best", dateOrder: "newest" },
+      ["views"],
+    ).map((post) => post.postId),
+    ["july-strong", "july-weak", "june-best", "june-mid"],
+  );
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "lowest", dateOrder: "oldest" },
+      ["views"],
+    ).map((post) => post.postId),
+    ["june-mid", "june-best", "july-weak", "july-strong"],
+  );
+});
+
+test("uses Views, Reach, and Engagement automatically when performance has no priorities", () => {
+  assert.deepEqual(AUTOMATIC_PERFORMANCE_METRICS, [
+    "views",
+    "reach",
+    "engagement",
+  ]);
+  const base = parseFacebookCsv(SAMPLE_CSV).posts[0];
+  const posts = [
+    {
+      ...base,
+      postId: "outlier",
+      views: 100,
+      reach: 10,
+      engagement: 10,
+    },
+    {
+      ...base,
+      postId: "balanced",
+      views: 80,
+      reach: 80,
+      engagement: 80,
+    },
+  ];
+  assert.deepEqual(
+    orderPosts(
+      posts,
+      { performanceOrder: "best", dateOrder: "none" },
+      [],
+    ).map((post) => post.postId),
+    ["balanced", "outlier"],
+  );
+});
+
+test("persists empty V8 priorities and migrates V7 ordering fields", () => {
+  const v8 = parseDashboardPreferences(
+    JSON.stringify({
+      ...DEFAULT_DASHBOARD_PREFERENCES,
+      rankingMetrics: [],
+      performanceOrder: "lowest",
+      dateOrder: "newest",
+    }),
+  );
+  assert.equal(v8.version, 8);
+  assert.deepEqual(v8.rankingMetrics, []);
+  assert.equal(v8.performanceOrder, "lowest");
+  assert.equal(v8.dateOrder, "newest");
+
+  const v7 = parseDashboardPreferences(
+    JSON.stringify({
+      version: 7,
+      view: "lines",
+      visibleMetrics: ["views"],
+      rankingMetrics: ["views"],
+      resultOrder: "date-desc",
+      chartGrouping: "week",
+      pageSize: 50,
+      showMetricQuickControls: false,
+      tableInternalScroll: true,
+      columnWidths: TABLE_COLUMN_DEFAULT_WIDTHS,
+      tableRowResizeEnabled: true,
+      tableRowHeight: 60,
+    }),
+  );
+  assert.equal(v7.version, 8);
+  assert.equal(v7.performanceOrder, "none");
+  assert.equal(v7.dateOrder, "newest");
+  assert.equal(v7.view, "lines");
+  assert.equal(v7.tableRowHeight, 60);
 });
 
 test("shows exact bar labels only for one or two visible metrics", () => {

@@ -77,20 +77,23 @@ import {
   type ChartInteractionState,
   type ChartMetricTransitionState,
   type CsvParseResult,
-  type DashboardPreferencesV7,
+  type DashboardPreferencesV8,
   type DashboardView,
+  type DateOrder,
   type DatePreset,
   type DuplicateTitleMode,
   type FilterState,
   type NumericRange,
   type PostMetric,
+  type PerformanceOrder,
   type RankingMetricKey,
-  type ResultOrder,
   type TableMetricKey,
   type TableColumnId,
+  AUTOMATIC_PERFORMANCE_METRICS,
   DEFAULT_DASHBOARD_PREFERENCES,
   DEFAULT_DATE_PRESET,
   DEFAULT_VISIBLE_METRICS,
+  LEGACY_V7_PREFERENCES_STORAGE_KEY,
   LEGACY_V6_PREFERENCES_STORAGE_KEY,
   LEGACY_V5_PREFERENCES_STORAGE_KEY,
   LEGACY_PREFERENCES_STORAGE_KEY,
@@ -123,8 +126,8 @@ import {
   getChartDataSignature,
   getDisplayedRowNumber,
   getPostHeadline,
-  getResultSortRule,
   isCustomDateRangeValid,
+  orderPosts,
   parseDashboardPreferences,
   parseFacebookCsv,
   reconcileChartMetricTransition,
@@ -135,7 +138,6 @@ import {
   settleChartMetricTransition,
   shouldRenderSettledBarValueLabels,
   shouldShowBarValueLabels,
-  sortPosts,
   stripHashtagWords,
   tableMetricDefinitions,
   updateRankingMetricAndVisibility,
@@ -642,10 +644,12 @@ function ChartPanel({
     const revision = motionRevision;
 
     if (reducedMotion) {
-      setMetricTransition((current) =>
-        settleChartMetricTransition(current, revision),
-      );
-      return;
+      const reducedMotionTimer = window.setTimeout(() => {
+        setMetricTransition((current) =>
+          settleChartMetricTransition(current, revision),
+        );
+      }, 0);
+      return () => window.clearTimeout(reducedMotionTimer);
     }
 
     const duration =
@@ -969,17 +973,16 @@ export default function Home() {
   const [dataset, setDataset] = useState<CsvParseResult>(EMPTY_DATASET);
   const [fileName, setFileName] = useState("");
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
-  const [rankingMetrics, setRankingMetrics] = useState<RankingMetricKey[]>([
-    "views",
-  ]);
-  const [resultOrder, setResultOrder] =
-    useState<ResultOrder>("performance-desc");
+  const [rankingMetrics, setRankingMetrics] = useState<RankingMetricKey[]>([]);
+  const [performanceOrder, setPerformanceOrder] =
+    useState<PerformanceOrder>("none");
+  const [dateOrder, setDateOrder] = useState<DateOrder>("none");
   const [duplicateTitleMode, setDuplicateTitleMode] =
     useState<DuplicateTitleMode>("include");
   const [view, setView] = useState<DashboardView>("table");
   const [chartGrouping, setChartGrouping] =
     useState<ChartGrouping>("post");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [rangesOpen, setRangesOpen] = useState(false);
   const [rankingMenuOpen, setRankingMenuOpen] = useState(false);
   const [showMetricQuickControls, setShowMetricQuickControls] =
@@ -1010,6 +1013,8 @@ export default function Home() {
   const [chooserDatum, setChooserDatum] = useState<ChartDatum | null>(null);
   const rankingMenuRef = useRef<HTMLDivElement | null>(null);
   const rankingMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const settingsDialogRef = useRef<HTMLDialogElement | null>(null);
   const tableFrameRef = useRef<HTMLDivElement | null>(null);
   const columnResizeCleanupRef = useRef<(() => void) | null>(null);
   const rowResizeCleanupRef = useRef<(() => void) | null>(null);
@@ -1018,6 +1023,7 @@ export default function Home() {
     try {
       const preferences = parseDashboardPreferences(
         window.localStorage.getItem(PREFERENCES_STORAGE_KEY) ??
+          window.localStorage.getItem(LEGACY_V7_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_V6_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_V5_PREFERENCES_STORAGE_KEY) ??
           window.localStorage.getItem(LEGACY_PREFERENCES_STORAGE_KEY) ??
@@ -1031,7 +1037,8 @@ export default function Home() {
         visibilityFromMetrics(preferences.visibleMetrics),
       );
       setRankingMetrics(preferences.rankingMetrics);
-      setResultOrder(preferences.resultOrder);
+      setPerformanceOrder(preferences.performanceOrder);
+      setDateOrder(preferences.dateOrder);
       setChartGrouping(preferences.chartGrouping);
       setShowMetricQuickControls(preferences.showMetricQuickControls);
       setTableInternalScroll(preferences.tableInternalScroll);
@@ -1060,12 +1067,13 @@ export default function Home() {
   useEffect(() => {
     if (!preferencesReady) return;
     const timer = window.setTimeout(() => {
-      const preferences: DashboardPreferencesV7 = {
-        version: 7,
+      const preferences: DashboardPreferencesV8 = {
+        version: 8,
         view,
         visibleMetrics: visibleMetricKeys,
         rankingMetrics,
-        resultOrder,
+        performanceOrder,
+        dateOrder,
         chartGrouping,
         pageSize: pagination.pageSize as 25 | 50 | 100,
         showMetricQuickControls,
@@ -1089,6 +1097,7 @@ export default function Home() {
           PREFERENCES_STORAGE_KEY,
           JSON.stringify(preferences),
         );
+        window.localStorage.removeItem(LEGACY_V7_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_V6_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_V5_PREFERENCES_STORAGE_KEY);
         window.localStorage.removeItem(LEGACY_PREFERENCES_STORAGE_KEY);
@@ -1104,10 +1113,11 @@ export default function Home() {
   }, [
     chartGrouping,
     columnSizing,
+    dateOrder,
     pagination.pageSize,
     preferencesReady,
     rankingMetrics,
-    resultOrder,
+    performanceOrder,
     showMetricQuickControls,
     tableInternalScroll,
     tableRowHeight,
@@ -1148,15 +1158,26 @@ export default function Home() {
     };
   }, [rankingMenuOpen]);
 
+  useEffect(() => {
+    const dialog = settingsDialogRef.current;
+    if (!dialog) return;
+    const handleCancel = (event: Event) => {
+      event.preventDefault();
+      closeSettings();
+    };
+    dialog.addEventListener("cancel", handleCancel);
+    return () => dialog.removeEventListener("cancel", handleCancel);
+  }, []);
+
   const posts = dataset.posts;
   const hasDataset = posts.length > 0;
   const baseFilteredPosts = useMemo(
     () => filterPosts(posts, filters),
     [posts, filters],
   );
-  const activeSorting = useMemo(
-    () => getResultSortRule(resultOrder),
-    [resultOrder],
+  const resultOrdering = useMemo(
+    () => ({ performanceOrder, dateOrder }),
+    [dateOrder, performanceOrder],
   );
   const duplicateTitleResult = useMemo(
     () =>
@@ -1169,8 +1190,8 @@ export default function Home() {
   );
   const filteredPosts = duplicateTitleResult.posts;
   const sortedPosts = useMemo(
-    () => sortPosts(filteredPosts, activeSorting, rankingMetrics),
-    [activeSorting, filteredPosts, rankingMetrics],
+    () => orderPosts(filteredPosts, resultOrdering, rankingMetrics),
+    [filteredPosts, rankingMetrics, resultOrdering],
   );
   const totals = useMemo(() => calculateTotals(filteredPosts), [filteredPosts]);
   const chartData = useMemo(
@@ -1178,10 +1199,10 @@ export default function Home() {
       buildChartData(
         filteredPosts,
         chartGrouping,
-        activeSorting,
+        resultOrdering,
         rankingMetrics,
       ),
-    [activeSorting, chartGrouping, filteredPosts, rankingMetrics],
+    [chartGrouping, filteredPosts, rankingMetrics, resultOrdering],
   );
   const pages = useMemo(
     () => [...new Set(posts.map((post) => post.pageName))].sort(),
@@ -1258,9 +1279,15 @@ export default function Home() {
       setRankingMetrics(result.metrics);
       if (checked) {
         setColumnVisibility(visibilityFromMetrics(result.visibleMetrics));
+        if (
+          rankingMetrics.length === 0 &&
+          performanceOrder === "none"
+        ) {
+          setPerformanceOrder("best");
+        }
       }
     },
-    [rankingMetrics, visibleMetricKeys],
+    [performanceOrder, rankingMetrics, visibleMetricKeys],
   );
 
   const columns = useMemo<ColumnDef<PostMetric>[]>(() => {
@@ -1324,8 +1351,6 @@ export default function Home() {
           const rankingKey = key as RankingMetricKey;
           const isRankingMetric =
             rankingEligible && rankingMetrics.includes(rankingKey);
-          const lastRankingMetric =
-            isRankingMetric && rankingMetrics.length === 1;
           const content = (
             <>
               <span>{label}</span>
@@ -1346,16 +1371,13 @@ export default function Home() {
                 isRankingMetric ? "is-ranking" : ""
               }`}
               aria-pressed={isRankingMetric}
-              aria-disabled={lastRankingMetric}
               onClick={() =>
                 toggleRankingMetric(rankingKey, !isRankingMetric)
               }
               title={
-                lastRankingMetric
-                  ? "At least one priority metric must remain selected"
-                  : `${isRankingMetric ? "Remove" : "Add"} ${label} ${
-                      isRankingMetric ? "from" : "to"
-                    } priority metrics`
+                `${isRankingMetric ? "Remove" : "Add"} ${label} ${
+                  isRankingMetric ? "from" : "to"
+                } priority metrics`
               }
             >
               {content}
@@ -1631,11 +1653,8 @@ export default function Home() {
   ).length;
   const activeFilterCount =
     activeRangeCount +
-    Number(Boolean(filters.search)) +
-    Number(filters.datePreset !== DEFAULT_DATE_PRESET) +
     Number(Boolean(filters.pageName)) +
-    Number(Boolean(filters.postType)) +
-    Number(duplicateTitleMode === "exclude");
+    Number(Boolean(filters.postType));
 
   const kpis: Array<{
     icon: Icon;
@@ -1729,14 +1748,25 @@ export default function Home() {
   function resetFilters() {
     setFilters(defaultFilters);
     setDuplicateTitleMode("include");
-    setRankingMetrics(["views"]);
-    setResultOrder("performance-desc");
+    setRankingMetrics([]);
+    setPerformanceOrder("none");
+    setDateOrder("none");
     setPagination((current) => ({ ...current, pageIndex: 0 }));
   }
 
-  function toggleAdvancedFilters() {
-    if (advancedOpen) setRangesOpen(false);
-    setAdvancedOpen((open) => !open);
+  function openSettings() {
+    const dialog = settingsDialogRef.current;
+    if (!dialog || dialog.open) return;
+    setSettingsOpen(true);
+    dialog.showModal();
+  }
+
+  function closeSettings() {
+    const dialog = settingsDialogRef.current;
+    setRangesOpen(false);
+    setSettingsOpen(false);
+    if (dialog?.open) dialog.close();
+    window.setTimeout(() => settingsButtonRef.current?.focus(), 0);
   }
 
   function restoreDefaultLayout() {
@@ -1774,7 +1804,9 @@ export default function Home() {
     filters.customEnd,
   );
   const rankingMetricsSummary =
-    rankingMetrics.length <= 2
+    rankingMetrics.length === 0
+      ? "None selected"
+      : rankingMetrics.length <= 2
       ? rankingMetricDefinitions
           .filter(({ key }) => rankingMetrics.includes(key))
           .map(({ label }) => label)
@@ -1785,7 +1817,10 @@ export default function Home() {
       baseFilteredPosts.every((post) => post[key] === 0),
     ),
   );
-  const performanceOrdering = resultOrder.startsWith("performance");
+  const performanceMetricSummary =
+    rankingMetrics.length > 0
+      ? rankingMetricsSummary
+      : "Auto: Views + Reach + Engagement";
 
   return (
     <>
@@ -1896,18 +1931,27 @@ export default function Home() {
           </div>
 
           <div
-            className="ranking-controls"
-            aria-label="Priority controls"
-            data-ranking-model="postpulse-accurate-ranking-v2"
+            className="analysis-toolbar"
+            aria-label="Post analysis controls"
+            data-ordering-model="postpulse-independent-ordering-v1"
           >
-            <section className="ranking-control-card">
-              <div className="ranking-control-heading">
-                <span>1</span>
-                <div>
-                  <strong>Date range</strong>
-                  <small>Anchored to the latest post</small>
-                </div>
-              </div>
+            <label className="search-control">
+              <span className="sr-only">Search posts</span>
+              <Search size={16} />
+              <input
+                value={filters.search}
+                onChange={(event) =>
+                  setFilters((current) => ({
+                    ...current,
+                    search: event.target.value,
+                  }))
+                }
+                placeholder="Search posts or page…"
+                data-testid="search-posts"
+              />
+            </label>
+            <div className="toolbar-field date-range-control">
+              <span>Date range</span>
               <select
                 value={filters.datePreset}
                 onChange={(event) =>
@@ -1924,16 +1968,47 @@ export default function Home() {
                 <option value="6m">Last 6 months</option>
                 <option value="custom">Custom range</option>
               </select>
-            </section>
+              {filters.datePreset === "custom" ? (
+                <span className="custom-date-popover">
+                  <label>
+                    From
+                    <input
+                      type="date"
+                      value={filters.customStart}
+                      max={filters.customEnd || undefined}
+                      onChange={(event) =>
+                        setFilters((current) => ({
+                          ...current,
+                          customStart: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    To
+                    <input
+                      type="date"
+                      value={filters.customEnd}
+                      min={filters.customStart || undefined}
+                      onChange={(event) =>
+                        setFilters((current) => ({
+                          ...current,
+                          customEnd: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <small className={customDateValid ? "" : "date-range-error"}>
+                    {customDateValid
+                      ? "Both boundary days are included."
+                      : "End date must be on or after start date."}
+                  </small>
+                </span>
+              ) : null}
+            </div>
 
-            <section className="ranking-control-card ranking-metrics-card">
-              <div className="ranking-control-heading">
-                <span>2</span>
-                <div>
-                  <strong>Priority metrics</strong>
-                  <small>Choose what matters most for these results</small>
-                </div>
-              </div>
+            <div className="toolbar-field priority-toolbar-field">
+              <span>Priority metrics</span>
               <div className="ranking-metric-dropdown" ref={rankingMenuRef}>
                 <button
                   ref={rankingMenuButtonRef}
@@ -1964,14 +2039,11 @@ export default function Home() {
                         rankingDescription,
                       }) => {
                         const checked = rankingMetrics.includes(key);
-                        const lastRankingMetric =
-                          checked && rankingMetrics.length === 1;
                         return (
                           <label key={key}>
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={lastRankingMetric}
                               onChange={(event) =>
                                 toggleRankingMetric(
                                   key,
@@ -1998,52 +2070,87 @@ export default function Home() {
                       },
                     )}
                     <p>
-                      Posts that perform well across all selected priority
-                      metrics appear first. Engagement cannot be combined with
-                      its reaction, comment, or share components.
+                      Optional. Selected metrics share equal weight.
+                      Engagement cannot be combined with reactions, comments,
+                      or shares.
                     </p>
                   </div>
                 ) : null}
               </div>
-              <p className="balanced-ranking-note">
-                <Sparkles size={12} />
-                <span>
-                  <strong>How priority works</strong>
-                  Posts that perform well across all selected priority metrics
-                  appear first.
-                </span>
-              </p>
-            </section>
+            </div>
 
-            <section className="ranking-control-card">
-              <div className="ranking-control-heading">
-                <span>3</span>
-                <div>
-                  <strong>Order results</strong>
-                  <small>Rank by performance or publish date</small>
-                </div>
-              </div>
+            <label className="toolbar-field performance-control">
+              <span>Performance</span>
               <select
-                value={resultOrder}
+                value={performanceOrder}
                 onChange={(event) =>
-                  setResultOrder(event.target.value as ResultOrder)
+                  setPerformanceOrder(
+                    event.target.value as PerformanceOrder,
+                  )
                 }
-                aria-label="Order results"
+                aria-label="Performance ordering"
               >
-                <option value="performance-desc">Best performance</option>
-                <option value="performance-asc">Lowest performance</option>
-                <option value="date-desc">Newest posts</option>
-                <option value="date-asc">Oldest posts</option>
+                <option value="none">Not applied</option>
+                <option value="best">Best to lowest</option>
+                <option value="lowest">Lowest to best</option>
               </select>
-              <p className="order-result-note">
-                {performanceOrdering
-                  ? `Prioritizes ${rankingMetricsSummary} together.`
-                  : "Priority metrics stay selected for performance ordering."}
-              </p>
-            </section>
+              {performanceOrder !== "none" ? (
+                <small>{performanceMetricSummary}</small>
+              ) : null}
+            </label>
+            <label className="toolbar-field">
+              <span>Date order</span>
+              <select
+                value={dateOrder}
+                onChange={(event) =>
+                  setDateOrder(event.target.value as DateOrder)
+                }
+                aria-label="Date ordering"
+              >
+                <option value="none">Not applied</option>
+                <option value="newest">Newest to oldest</option>
+                <option value="oldest">Oldest to newest</option>
+              </select>
+            </label>
+            {view !== "table" ? (
+              <label className="toolbar-field group-control">
+                <span>Group</span>
+                <select
+                  value={chartGrouping}
+                  onChange={(event) =>
+                    setChartGrouping(event.target.value as ChartGrouping)
+                  }
+                  aria-label="Chart grouping"
+                >
+                  <option value="post">Every post</option>
+                  <option value="day">Day</option>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                </select>
+              </label>
+            ) : null}
+            <button
+              ref={settingsButtonRef}
+              className={`button button-secondary filter-button ${settingsOpen ? "active" : ""}`}
+              onClick={openSettings}
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+            >
+              <SlidersHorizontal size={16} />
+              Settings
+              {activeFilterCount ? (
+                <span className="filter-count">{activeFilterCount}</span>
+              ) : null}
+            </button>
+            <button
+              className="button button-ghost reset-button"
+              onClick={resetFilters}
+            >
+              <RotateCcw size={15} /> Reset
+            </button>
           </div>
 
-          <div className="control-bar utility-control-bar">
+          <div className="control-bar utility-control-bar" hidden>
             <label className="search-control">
               <span className="sr-only">Search posts</span>
               <Search size={16} />
@@ -2056,7 +2163,7 @@ export default function Home() {
                   }))
                 }
                 placeholder="Search posts or page…"
-                data-testid="search-posts"
+                data-testid="search-posts-obsolete"
               />
             </label>
 
@@ -2079,9 +2186,9 @@ export default function Home() {
             ) : null}
 
             <button
-              className={`button button-secondary filter-button ${advancedOpen ? "active" : ""}`}
-              onClick={toggleAdvancedFilters}
-              aria-expanded={advancedOpen}
+              className="button button-secondary filter-button"
+              onClick={openSettings}
+              aria-expanded={settingsOpen}
             >
               <SlidersHorizontal size={16} />
               Filters
@@ -2099,7 +2206,7 @@ export default function Home() {
           </div>
 
           {filters.datePreset === "custom" ? (
-            <div className="custom-date-row">
+            <div className="custom-date-row" hidden>
               <label>
                 From
                 <input
@@ -2136,10 +2243,37 @@ export default function Home() {
             </div>
           ) : null}
 
-          {advancedOpen ? (
+          <dialog
+            ref={settingsDialogRef}
+            className="settings-dialog"
+            aria-labelledby="settings-dialog-title"
+            data-settings-modal="postpulse-settings-dialog-v1"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) closeSettings();
+            }}
+            onClose={() => {
+              setRangesOpen(false);
+              setSettingsOpen(false);
+            }}
+          >
+            <div className="settings-dialog-shell">
+              <header className="settings-dialog-header">
+                <div>
+                  <p className="eyebrow">DASHBOARD SETTINGS</p>
+                  <h2 id="settings-dialog-title">Settings</h2>
+                </div>
+                <button
+                  type="button"
+                  className="settings-close"
+                  onClick={closeSettings}
+                  aria-label="Close settings"
+                >
+                  <X size={18} />
+                </button>
+              </header>
             <section
-              className="advanced-panel advanced-panel-opening"
-              aria-label="Advanced filters"
+              className="advanced-panel"
+              aria-label="Dashboard settings"
             >
               <div className="advanced-section filter-dimensions">
                 <div className="advanced-title">
@@ -2343,7 +2477,8 @@ export default function Home() {
                 ) : null}
               </div>
             </section>
-          ) : null}
+            </div>
+          </dialog>
 
           <div
             className="results-meta"
@@ -2979,16 +3114,25 @@ export default function Home() {
                       <small>{post.pageName}</small>
                     </div>
                     <b>
-                      {performanceOrdering ? (
+                      {performanceOrder !== "none" ? (
                         <>
                           Balanced across
                           <em>
-                            {rankingMetricDefinitions
-                              .filter(({ key }) =>
-                                rankingMetrics.includes(key),
-                              )
-                              .map(({ compactLabel }) => compactLabel)
-                              .join(" + ")}
+                            {rankingMetrics.length
+                              ? rankingMetricDefinitions
+                                  .filter(({ key }) =>
+                                    rankingMetrics.includes(key),
+                                  )
+                                  .map(({ compactLabel }) => compactLabel)
+                                  .join(" + ")
+                              : AUTOMATIC_PERFORMANCE_METRICS.map(
+                                  (metricKey) =>
+                                    rankingMetricDefinitions.find(
+                                      ({ key }) => key === metricKey,
+                                    )?.compactLabel,
+                                )
+                                  .filter(Boolean)
+                                  .join(" + ")}
                           </em>
                         </>
                       ) : (

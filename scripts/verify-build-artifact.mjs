@@ -5,7 +5,8 @@ import process from "node:process";
 const root = process.cwd();
 const distDirectory = path.join(root, "dist");
 const buildMarker = "postpulse-bar-label-remount-v1";
-const rankingMarker = "postpulse-accurate-ranking-v2";
+const orderingMarker = "postpulse-independent-ordering-v1";
+const settingsModalMarker = "postpulse-settings-dialog-v1";
 const duplicateFilterMarker = "postpulse-best-duplicate-v2";
 const columnResizeMarker = "postpulse-cascading-column-resize-v3";
 const rowResizeMarker = "postpulse-row-resize-v1";
@@ -78,8 +79,10 @@ async function anyFileContains(files, text) {
 const [
   clientHasMarker,
   serverHasMarker,
-  clientHasRankingMarker,
-  serverHasRankingMarker,
+  clientHasOrderingMarker,
+  serverHasOrderingMarker,
+  clientHasSettingsModal,
+  serverHasSettingsModal,
   clientHasDuplicateFilter,
   serverHasDuplicateFilter,
   cssHasLabelClass,
@@ -92,7 +95,8 @@ const [
   clientHasRowResize,
   serverHasRowResize,
   cssHasRowResize,
-  cssHasFilterAttention,
+  cssHasSettingsModal,
+  cssHasSettingsBackdrop,
   clientHasPriorityCopy,
   serverHasPriorityCopy,
   cssHasVerticalOverflowLock,
@@ -101,8 +105,10 @@ const [
   await Promise.all([
     anyFileContains(clientJavaScript, buildMarker),
     anyFileContains(serverJavaScript, buildMarker),
-    anyFileContains(clientJavaScript, rankingMarker),
-    anyFileContains(serverJavaScript, rankingMarker),
+    anyFileContains(clientJavaScript, orderingMarker),
+    anyFileContains(serverJavaScript, orderingMarker),
+    anyFileContains(clientJavaScript, settingsModalMarker),
+    anyFileContains(serverJavaScript, settingsModalMarker),
     anyFileContains(clientJavaScript, duplicateFilterMarker),
     anyFileContains(serverJavaScript, duplicateFilterMarker),
     anyFileContains(cssFiles, "chart-bar-value-label"),
@@ -115,7 +121,8 @@ const [
     anyFileContains(clientJavaScript, rowResizeMarker),
     anyFileContains(serverJavaScript, rowResizeMarker),
     anyFileContains(cssFiles, "row-resizer"),
-    anyFileContains(cssFiles, "advanced-panel-attention"),
+    anyFileContains(cssFiles, "settings-dialog-shell"),
+    anyFileContains(cssFiles, ".settings-dialog::backdrop"),
     anyFileContains(clientJavaScript, "Priority metrics"),
     anyFileContains(serverJavaScript, "Priority metrics"),
     anyFileContains(cssFiles, "overflow:auto hidden"),
@@ -128,8 +135,11 @@ if (!clientHasMarker) {
 if (!serverHasMarker) {
   fail("the server bundle is missing the final bar-remount behavior.");
 }
-if (!clientHasRankingMarker || !serverHasRankingMarker) {
-  fail("the compiled bundle is missing independent multi-metric ranking.");
+if (!clientHasOrderingMarker || !serverHasOrderingMarker) {
+  fail("the compiled bundle is missing independent performance/date ordering.");
+}
+if (!clientHasSettingsModal || !serverHasSettingsModal) {
+  fail("the compiled bundle is missing the native Settings dialog.");
 }
 if (!clientHasDuplicateFilter || !serverHasDuplicateFilter) {
   fail("the compiled bundle is missing duplicate-title filtering.");
@@ -152,8 +162,8 @@ if (!cssHasColumnResize) {
 if (!clientHasRowResize || !serverHasRowResize || !cssHasRowResize) {
   fail("the compiled artifact is missing saved table row resizing.");
 }
-if (!cssHasFilterAttention) {
-  fail("the compiled CSS is missing the filter-panel attention cue.");
+if (!cssHasSettingsModal || !cssHasSettingsBackdrop) {
+  fail("the compiled CSS is missing the Settings modal or backdrop treatment.");
 }
 if (!clientHasPriorityCopy || !serverHasPriorityCopy) {
   fail("the compiled bundle is missing the simplified priority copy.");
@@ -168,5 +178,5 @@ if (!cssHasCompactMetricGap) {
 if (process.exitCode) process.exit();
 
 console.log(
-  "Build artifact verified: fresh dist with locked table overflow, compact metric spacing, cascading saved columns, compact rows, and final bar-label behavior.",
+  "Build artifact verified: fresh dist with V8 ordering, native Settings modal, cascading saved columns, compact rows, and final bar-label behavior.",
 );

@@ -61,18 +61,22 @@ test("bar highlighting hides only inactive quantity labels", async () => {
   assert.match(css, /opacity 120ms ease/);
 });
 
-test("ships compact row controls, the filter cue, and simplified priority copy", async () => {
+test("ships compact row controls, independent ordering, and the Settings modal", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Priority metrics/);
-  assert.match(page, /How priority works/);
+  assert.match(page, /Performance ordering/);
+  assert.match(page, /Date ordering/);
+  assert.match(page, /postpulse-settings-dialog-v1/);
+  assert.match(page, /dialog\.showModal\(\)/);
   assert.match(page, /Resizable row heights/);
   assert.doesNotMatch(page, />Ranking metrics</);
   assert.doesNotMatch(page, /Balanced performance/);
-  assert.match(css, /@keyframes advanced-panel-attention/);
+  assert.match(css, /\.settings-dialog::backdrop/);
+  assert.match(css, /backdrop-filter:\s*blur\(4px\)/);
   assert.match(css, /\.row-resizer/);
   assert.match(css, /\.table-frame\.is-compact-rows \.post-page/);
 });

@@ -39,11 +39,18 @@ export type NumericRange = { min?: number; max?: number };
 export type SortBy = TableMetricKey | "overallPerformance" | "publishedAt";
 export type SortOrder = "desc" | "asc";
 export type SortRule = { id: SortBy; desc: boolean };
+/** Retained only for migrating V7 and older saved preferences. */
 export type ResultOrder =
   | "performance-desc"
   | "performance-asc"
   | "date-desc"
   | "date-asc";
+export type PerformanceOrder = "none" | "best" | "lowest";
+export type DateOrder = "none" | "newest" | "oldest";
+export interface ResultOrdering {
+  performanceOrder: PerformanceOrder;
+  dateOrder: DateOrder;
+}
 export type DuplicateTitleMode = "include" | "exclude";
 
 export interface PostMetric {
@@ -148,12 +155,13 @@ export interface ChartInteractionState {
   activeIndex?: number | string | null;
 }
 
-export interface DashboardPreferencesV7 {
-  version: 7;
+export interface DashboardPreferencesV8 {
+  version: 8;
   view: DashboardView;
   visibleMetrics: TableMetricKey[];
   rankingMetrics: RankingMetricKey[];
-  resultOrder: ResultOrder;
+  performanceOrder: PerformanceOrder;
+  dateOrder: DateOrder;
   chartGrouping: ChartGrouping;
   pageSize: 25 | 50 | 100;
   showMetricQuickControls: boolean;
@@ -175,7 +183,8 @@ export interface MetricDefinition {
   quickControl?: boolean;
 }
 
-export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v7";
+export const PREFERENCES_STORAGE_KEY = "postpulse-preferences-v8";
+export const LEGACY_V7_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v7";
 export const LEGACY_V6_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v6";
 export const LEGACY_V5_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v5";
 export const LEGACY_PREFERENCES_STORAGE_KEY = "postpulse-preferences-v4";
@@ -294,6 +303,11 @@ export const ENGAGEMENT_COMPONENT_METRICS: RankingMetricKey[] = [
   "comments",
   "shares",
 ];
+export const AUTOMATIC_PERFORMANCE_METRICS: RankingMetricKey[] = [
+  "views",
+  "reach",
+  "engagement",
+];
 const LEGACY_CORE_PERFORMANCE_METRICS: RankingMetricKey[] =
   RANKING_METRICS.filter((key) => key !== "totalClicks");
 
@@ -339,12 +353,13 @@ export const TABLE_ROW_DEFAULT_HEIGHT = 78;
 export const TABLE_ROW_MIN_HEIGHT = 44;
 export const TABLE_ROW_COMPACT_THRESHOLD = 58;
 
-export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV7 = {
-  version: 7,
+export const DEFAULT_DASHBOARD_PREFERENCES: DashboardPreferencesV8 = {
+  version: 8,
   view: "table",
   visibleMetrics: DEFAULT_VISIBLE_METRICS,
-  rankingMetrics: ["views"],
-  resultOrder: "performance-desc",
+  rankingMetrics: [],
+  performanceOrder: "none",
+  dateOrder: "none",
   chartGrouping: "post",
   pageSize: 25,
   showMetricQuickControls: true,
@@ -361,6 +376,12 @@ const rankingMetricKeys = new Set<RankingMetricKey>(RANKING_METRICS);
 const viewKeys = new Set<DashboardView>(["table", "bars", "lines"]);
 const groupingKeys = new Set<ChartGrouping>(["post", "day", "week", "month"]);
 const pageSizes = new Set([25, 50, 100]);
+const performanceOrders = new Set<PerformanceOrder>([
+  "none",
+  "best",
+  "lowest",
+]);
+const dateOrders = new Set<DateOrder>(["none", "newest", "oldest"]);
 const resultOrders = new Set<ResultOrder>([
   "performance-desc",
   "performance-asc",
@@ -381,7 +402,7 @@ const requiredColumns = [
 
 type RawRow = Record<string, string | undefined>;
 
-function cloneDefaultPreferences(): DashboardPreferencesV7 {
+function cloneDefaultPreferences(): DashboardPreferencesV8 {
   return {
     ...DEFAULT_DASHBOARD_PREFERENCES,
     visibleMetrics: [...DEFAULT_DASHBOARD_PREFERENCES.visibleMetrics],
@@ -669,14 +690,13 @@ export function normalizeRankingMetrics(
 
 function validateRankingMetrics(value: unknown): RankingMetricKey[] | null {
   if (!Array.isArray(value)) return null;
-  const ranking = normalizeRankingMetrics(
+  return normalizeRankingMetrics(
     value.filter(
       (key): key is RankingMetricKey =>
         typeof key === "string" &&
         rankingMetricKeys.has(key as RankingMetricKey),
     ),
   );
-  return ranking.length ? ranking : null;
 }
 
 export function toggleRankingMetricSelection(
@@ -685,10 +705,6 @@ export function toggleRankingMetricSelection(
   checked: boolean,
 ): RankingMetricToggleResult {
   const current = normalizeRankingMetrics(currentMetrics);
-  if (!checked && current.includes(key) && current.length === 1) {
-    return { metrics: current, removedMetrics: [], changed: false };
-  }
-
   let requested = checked
     ? [...current.filter((metric) => metric !== key), key]
     : current.filter((metric) => metric !== key);
@@ -705,7 +721,7 @@ export function toggleRankingMetricSelection(
   const metrics = normalizeRankingMetrics(requested);
   const removedMetrics = current.filter((metric) => !metrics.includes(metric));
   return {
-    metrics: metrics.length ? metrics : current,
+    metrics,
     removedMetrics,
     changed:
       metrics.length !== current.length ||
@@ -777,6 +793,19 @@ function validateResultOrder(value: unknown): ResultOrder | null {
     : null;
 }
 
+function validatePerformanceOrder(value: unknown): PerformanceOrder | null {
+  return typeof value === "string" &&
+    performanceOrders.has(value as PerformanceOrder)
+    ? (value as PerformanceOrder)
+    : null;
+}
+
+function validateDateOrder(value: unknown): DateOrder | null {
+  return typeof value === "string" && dateOrders.has(value as DateOrder)
+    ? (value as DateOrder)
+    : null;
+}
+
 function getLegacyRankingMetrics(
   visibleMetrics: TableMetricKey[],
   sortBy: SortBy,
@@ -804,20 +833,30 @@ function getLegacyResultOrder(
   return sortOrder === "asc" ? "performance-asc" : "performance-desc";
 }
 
+function migrateResultOrder(resultOrder: ResultOrder): ResultOrdering {
+  if (resultOrder === "performance-desc") {
+    return { performanceOrder: "best", dateOrder: "none" };
+  }
+  if (resultOrder === "performance-asc") {
+    return { performanceOrder: "lowest", dateOrder: "none" };
+  }
+  if (resultOrder === "date-desc") {
+    return { performanceOrder: "none", dateOrder: "newest" };
+  }
+  return { performanceOrder: "none", dateOrder: "oldest" };
+}
+
 export function parseDashboardPreferences(
   storedValue: string | null,
   legacyVisibilityValue: string | null = null,
   legacyViewValue: string | null = null,
-): DashboardPreferencesV7 {
+): DashboardPreferencesV8 {
   const defaults = cloneDefaultPreferences();
   const stored = parseJson(storedValue);
 
-  if (
-    isRecord(stored) &&
-    (stored.version === 7 || stored.version === 6 || stored.version === 5)
-  ) {
+  if (isRecord(stored) && stored.version === 8) {
     return {
-      version: 7,
+      version: 8,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -828,8 +867,57 @@ export function parseDashboardPreferences(
       rankingMetrics:
         validateRankingMetrics(stored.rankingMetrics) ??
         defaults.rankingMetrics,
-      resultOrder:
-        validateResultOrder(stored.resultOrder) ?? defaults.resultOrder,
+      performanceOrder:
+        validatePerformanceOrder(stored.performanceOrder) ??
+        defaults.performanceOrder,
+      dateOrder:
+        validateDateOrder(stored.dateOrder) ?? defaults.dateOrder,
+      chartGrouping:
+        typeof stored.chartGrouping === "string" &&
+        groupingKeys.has(stored.chartGrouping as ChartGrouping)
+          ? (stored.chartGrouping as ChartGrouping)
+          : defaults.chartGrouping,
+      pageSize:
+        typeof stored.pageSize === "number" && pageSizes.has(stored.pageSize)
+          ? (stored.pageSize as 25 | 50 | 100)
+          : defaults.pageSize,
+      showMetricQuickControls:
+        typeof stored.showMetricQuickControls === "boolean"
+          ? stored.showMetricQuickControls
+          : defaults.showMetricQuickControls,
+      tableInternalScroll:
+        typeof stored.tableInternalScroll === "boolean"
+          ? stored.tableInternalScroll
+          : defaults.tableInternalScroll,
+      columnWidths: validateColumnWidths(stored.columnWidths),
+      tableRowResizeEnabled:
+        typeof stored.tableRowResizeEnabled === "boolean"
+          ? stored.tableRowResizeEnabled
+          : defaults.tableRowResizeEnabled,
+      tableRowHeight: clampTableRowHeight(stored.tableRowHeight),
+    };
+  }
+
+  if (
+    isRecord(stored) &&
+    (stored.version === 7 || stored.version === 6 || stored.version === 5)
+  ) {
+    const legacyResultOrder =
+      validateResultOrder(stored.resultOrder) ?? "performance-desc";
+    const migratedOrdering = migrateResultOrder(legacyResultOrder);
+    return {
+      version: 8,
+      view:
+        typeof stored.view === "string" &&
+        viewKeys.has(stored.view as DashboardView)
+          ? (stored.view as DashboardView)
+          : defaults.view,
+      visibleMetrics:
+        validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics,
+      rankingMetrics:
+        validateRankingMetrics(stored.rankingMetrics) ??
+        defaults.rankingMetrics,
+      ...migratedOrdering,
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -864,8 +952,11 @@ export function parseDashboardPreferences(
   }
 
   if (isRecord(stored) && stored.version === 4) {
+    const legacyResultOrder =
+      validateResultOrder(stored.resultOrder) ?? "performance-desc";
+    const migratedOrdering = migrateResultOrder(legacyResultOrder);
     return {
-      version: 7,
+      version: 8,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -876,8 +967,7 @@ export function parseDashboardPreferences(
       rankingMetrics:
         validateRankingMetrics(stored.rankingMetrics) ??
         defaults.rankingMetrics,
-      resultOrder:
-        validateResultOrder(stored.resultOrder) ?? defaults.resultOrder,
+      ...migratedOrdering,
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -908,7 +998,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 7,
+      version: 8,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -916,7 +1006,7 @@ export function parseDashboardPreferences(
           : defaults.view,
       visibleMetrics,
       rankingMetrics: getLegacyRankingMetrics(visibleMetrics, sortBy),
-      resultOrder: getLegacyResultOrder(sortBy, sortOrder),
+      ...migrateResultOrder(getLegacyResultOrder(sortBy, sortOrder)),
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -955,7 +1045,7 @@ export function parseDashboardPreferences(
       validateVisibleMetrics(stored.visibleMetrics) ?? defaults.visibleMetrics;
 
     return {
-      version: 7,
+      version: 8,
       view:
         typeof stored.view === "string" &&
         viewKeys.has(stored.view as DashboardView)
@@ -963,7 +1053,7 @@ export function parseDashboardPreferences(
           : defaults.view,
       visibleMetrics,
       rankingMetrics: getLegacyRankingMetrics(visibleMetrics, sortBy),
-      resultOrder: getLegacyResultOrder(sortBy, sortOrder),
+      ...migrateResultOrder(getLegacyResultOrder(sortBy, sortOrder)),
       chartGrouping:
         typeof stored.chartGrouping === "string" &&
         groupingKeys.has(stored.chartGrouping as ChartGrouping)
@@ -1307,7 +1397,9 @@ function getSelectedRankingMetrics(
   selectedMetrics: readonly RankingMetricKey[],
 ): RankingMetricKey[] {
   const selected = normalizeRankingMetrics(selectedMetrics);
-  return selected.length ? selected : ["views"];
+  return selected.length
+    ? selected
+    : [...AUTOMATIC_PERFORMANCE_METRICS];
 }
 
 export function calculateBalancedPerformanceDetails<
@@ -1428,6 +1520,92 @@ export function sortPosts(
     .map(({ post }) => post);
 }
 
+function getCalendarMonthIndex(timestamp: number): number {
+  const date = new Date(timestamp);
+  return date.getFullYear() * 12 + date.getMonth();
+}
+
+function orderPerformanceItems<T extends RankingMetricValues>(
+  items: readonly T[],
+  ordering: ResultOrdering,
+  selectedMetrics: readonly RankingMetricKey[],
+  getTimestamp: (item: T) => number,
+): T[] {
+  if (
+    ordering.performanceOrder === "none" &&
+    ordering.dateOrder === "none"
+  ) {
+    return [...items];
+  }
+
+  const scores =
+    ordering.performanceOrder === "none"
+      ? null
+      : calculateBalancedPerformanceDetails(items, selectedMetrics);
+  const performanceDirection =
+    ordering.performanceOrder === "lowest" ? 1 : -1;
+  const dateDirection = ordering.dateOrder === "oldest" ? 1 : -1;
+
+  return items
+    .map((item, sourceIndex) => ({
+      item,
+      sourceIndex,
+      timestamp: getTimestamp(item),
+      score: scores?.[sourceIndex] ?? { primary: 0, tieBreaker: 0 },
+    }))
+    .sort((left, right) => {
+      if (
+        ordering.dateOrder !== "none" &&
+        ordering.performanceOrder !== "none"
+      ) {
+        const monthComparison =
+          (getCalendarMonthIndex(left.timestamp) -
+            getCalendarMonthIndex(right.timestamp)) *
+          dateDirection;
+        if (monthComparison) return monthComparison;
+      } else if (ordering.dateOrder !== "none") {
+        const dateComparison =
+          (left.timestamp - right.timestamp) * dateDirection;
+        if (dateComparison) return dateComparison;
+      }
+
+      if (ordering.performanceOrder !== "none") {
+        const primaryComparison =
+          (left.score.primary - right.score.primary) *
+          performanceDirection;
+        if (primaryComparison) return primaryComparison;
+        const tieComparison =
+          (left.score.tieBreaker - right.score.tieBreaker) *
+          performanceDirection;
+        if (tieComparison) return tieComparison;
+      }
+
+      if (
+        ordering.dateOrder !== "none" &&
+        ordering.performanceOrder !== "none"
+      ) {
+        const dateComparison =
+          (left.timestamp - right.timestamp) * dateDirection;
+        if (dateComparison) return dateComparison;
+      }
+      return left.sourceIndex - right.sourceIndex;
+    })
+    .map(({ item }) => item);
+}
+
+export function orderPosts(
+  posts: PostMetric[],
+  ordering: ResultOrdering,
+  selectedMetrics: readonly RankingMetricKey[] = [],
+): PostMetric[] {
+  return orderPerformanceItems(
+    posts,
+    ordering,
+    selectedMetrics,
+    (post) => post.publishedAt,
+  );
+}
+
 function normalizeDuplicateTitlePart(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
@@ -1449,7 +1627,7 @@ export function getDuplicateTitleKey(post: PostMetric): string {
 export function applyDuplicateTitleMode(
   posts: PostMetric[],
   mode: DuplicateTitleMode,
-  selectedMetrics: readonly RankingMetricKey[] = ["views"],
+  selectedMetrics: readonly RankingMetricKey[] = [],
 ): DuplicateTitleResult {
   if (mode === "include") {
     return { posts: [...posts], hiddenCount: 0 };
@@ -1461,12 +1639,16 @@ export function applyDuplicateTitleMode(
     selectedMetrics,
   );
   const seenTitles = new Set<string>();
-  const survivingPosts = orderedPosts.filter((post) => {
+  const survivingPostIds = new Set<string>();
+  orderedPosts.forEach((post) => {
     const key = getDuplicateTitleKey(post);
-    if (seenTitles.has(key)) return false;
+    if (seenTitles.has(key)) return;
     seenTitles.add(key);
-    return true;
+    survivingPostIds.add(post.postId);
   });
+  const survivingPosts = posts.filter((post) =>
+    survivingPostIds.has(post.postId),
+  );
 
   return {
     posts: survivingPosts,
@@ -1521,10 +1703,12 @@ function toChartDatum(
   end: number,
   grouping: ChartGrouping,
   groupPosts: PostMetric[],
-  sorting: SortRule[],
+  ordering: SortRule[] | ResultOrdering,
   selectedMetrics: readonly RankingMetricKey[],
 ): ChartDatum {
-  const sortedGroup = sortPosts(groupPosts, sorting, selectedMetrics);
+  const sortedGroup = Array.isArray(ordering)
+    ? sortPosts(groupPosts, ordering, selectedMetrics)
+    : orderPosts(groupPosts, ordering, selectedMetrics);
   const totals = calculateTotals(sortedGroup);
   const single = grouping === "post" ? sortedGroup[0] : null;
   return {
@@ -1556,6 +1740,19 @@ function toChartDatum(
       tableMetricDefinitions.map(({ key: metricKey }) => [metricKey, 0]),
     ) as Record<TableMetricKey, number | null>,
   };
+}
+
+function orderChartData(
+  data: ChartDatum[],
+  ordering: ResultOrdering,
+  selectedMetrics: readonly RankingMetricKey[],
+): ChartDatum[] {
+  return orderPerformanceItems(
+    data,
+    ordering,
+    selectedMetrics,
+    (datum) => datum.start,
+  );
 }
 
 function sortChartData(
@@ -1637,20 +1834,23 @@ function normalizeChartData(data: ChartDatum[]): ChartDatum[] {
 export function buildChartData(
   posts: PostMetric[],
   grouping: ChartGrouping,
-  sorting: SortRule[],
-  selectedMetrics: readonly RankingMetricKey[] = ["views"],
+  ordering: SortRule[] | ResultOrdering,
+  selectedMetrics: readonly RankingMetricKey[] = [],
 ): ChartDatum[] {
   if (!posts.length) return [];
 
   if (grouping === "post") {
-    const data = sortPosts(posts, sorting, selectedMetrics).map((post) =>
+    const orderedPosts = Array.isArray(ordering)
+      ? sortPosts(posts, ordering, selectedMetrics)
+      : orderPosts(posts, ordering, selectedMetrics);
+    const data = orderedPosts.map((post) =>
       toChartDatum(
         post.postId,
         post.publishedAt,
         post.publishedAt,
         grouping,
         [post],
-        sorting,
+        ordering,
         selectedMetrics,
       ),
     );
@@ -1670,11 +1870,15 @@ export function buildChartData(
       getBucketEnd(start, grouping),
       grouping,
       groupPosts,
-      sorting,
+      ordering,
       selectedMetrics,
     ),
   );
-  return normalizeChartData(sortChartData(data, sorting, selectedMetrics));
+  return normalizeChartData(
+    Array.isArray(ordering)
+      ? sortChartData(data, ordering, selectedMetrics)
+      : orderChartData(data, ordering, selectedMetrics),
+  );
 }
 
 export function getChartDataSignature(data: ChartDatum[]): string {
